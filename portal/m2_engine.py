@@ -99,6 +99,8 @@ def _get_categorization_path() -> str:
         M2_CATEGORIZATION_FILE_ID, 'Scheme_Category_Catgorization.xlsx',
     )
 
+RATING_IMAGES = {'IN_FORM', 'ON_TRACK', 'OUT_OF_FORM', 'OFF_TRACK'}
+
 def _get_rating_image(key: str) -> str:
     """Download a rating image from Drive. key: IN_FORM, ON_TRACK, etc."""
     file_map = {
