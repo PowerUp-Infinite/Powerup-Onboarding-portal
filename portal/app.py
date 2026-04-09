@@ -19,12 +19,14 @@ load_dotenv()
 
 # Streamlit Cloud: inject secrets into os.environ BEFORE importing
 # any other module (config.py reads os.environ at import time).
+_secrets_debug = []
 try:
     for key, val in st.secrets.items():
+        _secrets_debug.append(f"{key}: type={type(val).__name__}, is_str={isinstance(val, str)}")
         if isinstance(val, str) and key not in os.environ:
             os.environ[key] = val
-except FileNotFoundError:
-    pass  # no secrets file (local dev uses .env instead)
+except Exception as _e:
+    _secrets_debug.append(f"EXCEPTION: {type(_e).__name__}: {_e}")
 
 from google_auth import check_auth
 from tabs import data_manager, m1_report, m2_deck, m3_deck
@@ -45,6 +47,16 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────
 st.title("⚡ PowerUp Portal")
 st.caption("Internal tool — PowerUp Infinite · Wealth Management")
+
+# TEMPORARY DEBUG — remove after secrets are working
+with st.expander("DEBUG: secrets injection", expanded=True):
+    st.write("Secrets debug log:")
+    for line in _secrets_debug:
+        st.code(line)
+    st.write(f"M1_APPS_SCRIPT_URL in os.environ: {bool(os.environ.get('M1_APPS_SCRIPT_URL'))}")
+    st.write(f"MAIN_SPREADSHEET_ID in os.environ: {bool(os.environ.get('MAIN_SPREADSHEET_ID'))}")
+    from config import M1_APPS_SCRIPT_URL
+    st.write(f"config.M1_APPS_SCRIPT_URL: {M1_APPS_SCRIPT_URL!r}")
 
 # ─────────────────────────────────────────────────────────────
 # Sidebar — auth status
