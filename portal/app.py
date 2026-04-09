@@ -26,7 +26,7 @@ except Exception:
     pass
 
 from google_auth import check_auth
-from tabs import data_manager, m1_report, m2_deck, m3_deck
+from tabs import data_manager, m1_report, m2_deck, m3_deck, agreement
 import sheets
 
 # ─────────────────────────────────────────────────────────────
@@ -76,10 +76,11 @@ if "cleanup_done" not in st.session_state:
 # ─────────────────────────────────────────────────────────────
 # Tabs
 # ─────────────────────────────────────────────────────────────
-tab_m1, tab_m2, tab_m3, tab_data = st.tabs([
+tab_m1, tab_m2, tab_m3, tab_agree, tab_data = st.tabs([
     "📋  M1 · Client Report",
     "📊  M2 · Strategy Deck",
     "🔄  M3 · Transition Deck",
+    "📝  Agreements",
     "🗄️  Data Manager",
 ])
 
@@ -96,5 +97,9 @@ with tab_m3:
     m3_deck.render()
 
 # ── Tab 4 ─────────────────────────────────────────────────────
+with tab_agree:
+    agreement.render()
+
+# ── Tab 5 ─────────────────────────────────────────────────────
 with tab_data:
     data_manager.render()

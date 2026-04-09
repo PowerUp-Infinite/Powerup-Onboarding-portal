@@ -673,6 +673,62 @@ def upload_pptx_to_drive(
     }
 
 
+def upload_docx_to_drive(
+    buf: BytesIO,
+    filename: str,
+    folder_id: str,
+    convert_to_gdoc: bool = False,
+) -> dict:
+    """
+    Upload a DOCX BytesIO buffer to Google Drive.
+
+    Returns:
+        {"id": file_id, "url": web_view_link, "name": filename}
+    """
+    drive = get_drive_service()
+
+    mime_docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    file_metadata = {
+        "name": filename.replace(".docx", "") if convert_to_gdoc else filename,
+        "parents": [folder_id],
+    }
+    if convert_to_gdoc:
+        file_metadata["mimeType"] = "application/vnd.google-apps.document"
+
+    media = MediaIoBaseUpload(buf, mimetype=mime_docx, resumable=True)
+
+    created = drive.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id, name, webViewLink",
+        supportsAllDrives=True,
+    ).execute()
+
+    return {
+        "id": created["id"],
+        "url": created.get("webViewLink", f"https://drive.google.com/file/d/{created['id']}/view"),
+        "name": created["name"],
+    }
+
+
+def export_drive_file_as_pdf(file_id: str) -> BytesIO:
+    """Export a Google Drive file (Docs/Slides/Sheets) as PDF."""
+    drive = get_drive_service()
+    request = drive.files().export_media(
+        fileId=file_id,
+        mimeType="application/pdf",
+    )
+    from googleapiclient.http import MediaIoBaseDownload
+    buf = BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    buf.seek(0)
+    return buf
+
+
 # ─────────────────────────────────────────────────────────────
 # Drive cleanup — auto-delete M1/M2 outputs older than 7 days
 # ─────────────────────────────────────────────────────────────

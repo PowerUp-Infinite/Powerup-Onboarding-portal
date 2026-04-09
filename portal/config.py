@@ -33,6 +33,10 @@ _ENV_KEYS: dict[str, tuple[str, str | None]] = {
     "M1_OUTPUT_FOLDER_ID":        ("M1_OUTPUT_FOLDER_ID", None),
     "M2_OUTPUT_FOLDER_ID":        ("M2_OUTPUT_FOLDER_ID", None),
     "M3_OUTPUT_FOLDER_ID":        ("M3_OUTPUT_FOLDER_ID", None),
+    # Agreement Automation
+    "AGREEMENT_ELITE_TEMPLATE_ID":    ("AGREEMENT_ELITE_TEMPLATE_ID", None),
+    "AGREEMENT_NONELITE_TEMPLATE_ID": ("AGREEMENT_NONELITE_TEMPLATE_ID", None),
+    "AGREEMENT_OUTPUT_FOLDER_ID":     ("AGREEMENT_OUTPUT_FOLDER_ID", None),
 }
 
 
