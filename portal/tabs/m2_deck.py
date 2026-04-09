@@ -69,6 +69,10 @@ def _sync_upload_to_sheets(uploaded_file) -> list[str]:
             df.columns = [c.lstrip('\ufeff').strip() for c in df.columns]
             if df.empty:
                 continue
+            # Convert Timestamp/datetime columns to strings for JSON serialization
+            for col in df.columns:
+                if pd.api.types.is_datetime64_any_dtype(df[col]):
+                    df[col] = df[col].dt.strftime('%Y-%m-%d').fillna('')
             upsert_fn(df)
             synced.append(canonical)
         except Exception as e:
