@@ -41,7 +41,7 @@ def render():
         horizontal=True,
         key="ag_type",
     )
-    is_elite = "Elite" in agreement_type
+    is_elite = agreement_type.startswith("Elite")
 
     st.divider()
 
