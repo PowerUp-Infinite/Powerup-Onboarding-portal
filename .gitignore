@@ -1,0 +1,41 @@
+# Environment and secrets — never commit these
+.env
+portal/.env
+*.secrets.toml
+**/secrets.toml
+*.json
+
+# Allow .streamlit/config.toml (but not secrets)
+!.streamlit/
+!.streamlit/config.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Local asset files (now served from Google Drive)
+portal/*.pptx
+portal/*.png
+portal/*.xlsx
+
+# Old automation folders (not needed for deployment)
+M1-automation/
+M2-automation/
+M3-automation/
+
+# Output files
+*.pptx
+*.xlsx
+_backups/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+WORKLOG.md
+Test data.xlsx

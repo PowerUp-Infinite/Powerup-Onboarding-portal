@@ -1,0 +1,359 @@
+"""
+tabs/m2_deck.py — M2 Client Strategy Deck tab.
+
+Flow:
+  1. Load client list from Google Sheets (primary) or uploaded Excel (override)
+  2. User selects a client (name-based dropdown)
+  3. User confirms/selects matching questionnaire response
+  4. "Generate Deck" → m2_engine builds PPTX in memory
+  5. PPTX uploaded to Google Drive (M2_OUTPUT_FOLDER_ID), converted to Slides
+  6. Portal shows clickable link to the generated presentation
+"""
+
+from difflib import SequenceMatcher
+
+import pandas as pd
+import streamlit as st
+
+import sheets
+from config import M2_OUTPUT_FOLDER_ID
+from m2_engine import generate_deck, load_data
+
+
+# ── helpers ──────────────────────────────────────────────────
+
+
+def _find_col(columns, *candidates) -> str | None:
+    """Case-insensitive column lookup."""
+    upper_map = {c.upper(): c for c in columns}
+    for cand in candidates:
+        if cand.upper() in upper_map:
+            return upper_map[cand.upper()]
+    return None
+
+
+def _clients_from_upload(uploaded_file) -> list[tuple[str, str]]:
+    """
+    Parse uploaded Excel/CSV → [(pf_id, display_name), ...].
+    Scans all sheets for PF_ID column; uses NAME for display if present.
+    """
+    try:
+        if uploaded_file.name.lower().endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+            return _extract_clients(df)
+
+        xls = pd.ExcelFile(uploaded_file)
+        all_clients: dict[str, str] = {}
+
+        for sheet_name in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name)
+            df.columns = [c.strip() for c in df.columns]
+
+            pf_col = _find_col(df.columns, "PF_ID", "PFID", "pf_id")
+            if not pf_col:
+                continue
+
+            name_col = _find_col(
+                df.columns, "NAME", "CLIENT_NAME", "CUSTOMER_NAME",
+                "INVESTOR_NAME", "name", "Name",
+            )
+
+            for _, row in df.drop_duplicates(pf_col).iterrows():
+                pid = str(row.get(pf_col, "")).strip()
+                if not pid or pid.lower() == "nan":
+                    continue
+                name = ""
+                if name_col:
+                    name = str(row.get(name_col, "")).strip()
+                    if name.lower() == "nan":
+                        name = ""
+                if pid not in all_clients or (not all_clients[pid] and name):
+                    all_clients[pid] = name
+
+        return [
+            (pid, name if name else pid)
+            for pid, name in sorted(all_clients.items(), key=lambda x: x[1] or x[0])
+        ]
+    except Exception as e:
+        st.error(f"Could not parse uploaded file: {e}")
+        return []
+
+
+def _extract_clients(df: pd.DataFrame) -> list[tuple[str, str]]:
+    """Extract (pf_id, label) pairs from a single DataFrame."""
+    df.columns = [c.strip() for c in df.columns]
+
+    pf_col = _find_col(df.columns, "PF_ID", "PFID", "pf_id")
+    if not pf_col:
+        return []
+
+    name_col = _find_col(
+        df.columns, "NAME", "CLIENT_NAME", "CUSTOMER_NAME",
+        "INVESTOR_NAME", "name", "Name",
+    )
+
+    clients = []
+    for _, row in df.drop_duplicates(pf_col).iterrows():
+        pid = str(row.get(pf_col, "")).strip()
+        if not pid or pid.lower() == "nan":
+            continue
+        name = ""
+        if name_col:
+            name = str(row.get(name_col, "")).strip()
+            if name.lower() == "nan":
+                name = ""
+        label = name if name else pid
+        clients.append((pid, label))
+
+    return sorted(clients, key=lambda x: x[1])
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_questionnaire_names() -> list[str]:
+    """Load all respondent names from the questionnaire sheet."""
+    try:
+        qdf = sheets.read_questionnaire()
+        if qdf.empty:
+            return []
+        name_col = next((c for c in qdf.columns if c.lower() == "name"), None)
+        if not name_col:
+            return []
+        names = qdf[name_col].astype(str).str.strip().tolist()
+        return [n for n in names if n and n.lower() not in ("nan", "")]
+    except Exception:
+        return []
+
+
+def _best_match(target: str, choices: list[str]) -> int:
+    """Return index of best fuzzy match from choices, or 0 if no good match."""
+    if not choices or not target:
+        return 0
+    target_l = target.lower().strip()
+    best_idx, best_score = 0, 0.0
+    for i, c in enumerate(choices):
+        score = SequenceMatcher(None, target_l, c.lower().strip()).ratio()
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    return best_idx if best_score > 0.3 else 0
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_clients_from_sheets() -> list[tuple[str, str]]:
+    """
+    Load client list from Google Sheets.
+    Returns [(pf_id, display_label), ...] sorted by name.
+    """
+    pf_df = sheets.read_pf_level()
+    scheme_df = sheets.read_scheme_level()
+
+    if pf_df.empty:
+        return []
+
+    # Build name map from Scheme_level first, then PF_level
+    name_map: dict[str, str] = {}
+
+    if not scheme_df.empty:
+        name_col = _find_col(
+            scheme_df.columns, "NAME", "CLIENT_NAME", "CUSTOMER_NAME",
+            "INVESTOR_NAME",
+        )
+        pf_col_s = _find_col(scheme_df.columns, "PF_ID", "PFID")
+        if name_col and pf_col_s:
+            for _, row in scheme_df.drop_duplicates(pf_col_s).iterrows():
+                pid = str(row.get(pf_col_s, "")).strip()
+                name = str(row.get(name_col, "")).strip()
+                if pid and name and name.lower() not in ("nan", ""):
+                    name_map[pid] = name
+
+    if not name_map:
+        name_col_pf = _find_col(
+            pf_df.columns, "NAME", "CLIENT_NAME", "CUSTOMER_NAME",
+            "INVESTOR_NAME",
+        )
+        pf_col_pf = _find_col(pf_df.columns, "PF_ID", "PFID")
+        if name_col_pf and pf_col_pf:
+            for _, row in pf_df.drop_duplicates(pf_col_pf).iterrows():
+                pid = str(row.get(pf_col_pf, "")).strip()
+                name = str(row.get(name_col_pf, "")).strip()
+                if pid and name and name.lower() not in ("nan", ""):
+                    name_map[pid] = name
+
+    pf_col = _find_col(pf_df.columns, "PF_ID", "PFID") or "PF_ID"
+    clients = []
+    for pid in pf_df[pf_col].astype(str).unique():
+        name = name_map.get(pid, "")
+        if not name:
+            continue  # skip PF_IDs with no client name
+        clients.append((pid, name))
+
+    return sorted(clients, key=lambda x: x[1])
+
+
+# ── main render ──────────────────────────────────────────────
+
+
+def render():
+    st.header("M2 — Client Strategy Deck")
+    st.caption(
+        "Select a client to generate their personalised strategy "
+        "presentation as a Google Slides deck."
+    )
+    st.divider()
+
+    # ── Config check ──────────────────────────────────────────
+    if not M2_OUTPUT_FOLDER_ID:
+        st.error(
+            "**M2_OUTPUT_FOLDER_ID is not configured.**\n\n"
+            "Add it to `portal/.env`:\n"
+            "```\nM2_OUTPUT_FOLDER_ID=your_folder_id_here\n```"
+        )
+        return
+
+    # ── Primary: load clients from Google Sheets ────────────────
+    clients: list[tuple[str, str]] = []
+    source = ""
+
+    with st.spinner("Loading client list..."):
+        try:
+            clients = _load_clients_from_sheets()
+            source = "sheets"
+        except Exception as e:
+            st.error(f"Could not load client list from Google Sheets: {e}")
+
+    # ── Fallback: file upload ─────────────────────────────────
+    if not clients:
+        st.info("No clients found in Google Sheets. Upload a client file instead.")
+
+    uploaded = st.file_uploader(
+        "Or upload client Excel / CSV",
+        type=["xlsx", "xls", "csv"],
+        key="m2_upload",
+        help="Upload a file containing PF_ID (and optionally NAME) columns. Overrides the list above.",
+    )
+
+    if uploaded:
+        upload_clients = _clients_from_upload(uploaded)
+        if upload_clients:
+            clients = upload_clients
+            source = "upload"
+        else:
+            st.warning("No PF_ID column found in the uploaded file.")
+
+    if not clients:
+        st.warning(
+            "No clients found. Upload a client Excel file above, "
+            "or add client data via the Data Manager tab."
+        )
+        return
+
+    # ── Client selector ───────────────────────────────────────
+    labels = [label for _, label in clients]
+    pf_ids = [pid for pid, _ in clients]
+
+    if len(clients) == 1 and source == "upload":
+        selected_pf_id = pf_ids[0]
+        selected_name = labels[0]
+        st.info(f"Client: **{labels[0]}**")
+    else:
+        selected_label = st.selectbox(
+            "Select client",
+            options=labels,
+            index=0,
+            key="m2_client",
+            help=(
+                "From uploaded file."
+                if source == "upload"
+                else "From Google Sheets. Upload a file above for a different client."
+            ),
+        )
+        selected_pf_id = pf_ids[labels.index(selected_label)]
+        selected_name = selected_label
+
+    # ── Questionnaire matching ────────────────────────────────
+    q_names = _load_questionnaire_names()
+    saved_mapping = sheets.read_pf_id_mapping()
+    saved_q_name = saved_mapping.get(selected_pf_id)
+
+    questionnaire_name = None
+
+    if q_names:
+        options = sorted(set(q_names))
+
+        # Pre-select: saved mapping first, then fuzzy match on client name
+        if saved_q_name and saved_q_name in options:
+            default_idx = options.index(saved_q_name)
+        else:
+            default_idx = _best_match(selected_name, options)
+
+        questionnaire_name = st.selectbox(
+            "Questionnaire response",
+            options=options,
+            index=default_idx,
+            key=f"m2_questionnaire_{selected_pf_id}",
+            help="Pre-filled with best match. Click and type to search.",
+        )
+    else:
+        st.caption("No questionnaire responses found.")
+
+    # ── Output folder info ────────────────────────────────────
+    folder_url = f"https://drive.google.com/drive/folders/{M2_OUTPUT_FOLDER_ID}"
+    st.caption(f"Decks saved to: [M2 Output folder]({folder_url})")
+
+    st.divider()
+
+    # ── Generate button ───────────────────────────────────────
+    if st.button("Generate Deck", type="primary", use_container_width=True, key="m2_generate"):
+        display = selected_name
+        customer_name = display if display != selected_pf_id else "Client"
+
+        # Save the questionnaire mapping if user selected one
+        if questionnaire_name and questionnaire_name != saved_q_name:
+            try:
+                sheets.save_pf_id_mapping(selected_pf_id, questionnaire_name)
+            except Exception:
+                pass  # non-critical — don't block generation
+
+        with st.spinner(f"Loading data for {display}..."):
+            try:
+                data = load_data()
+            except Exception as e:
+                st.error(f"Failed to load data from Google Sheets: {e}")
+                return
+
+        with st.spinner(f"Generating strategy deck for {display}... (this can take up to 2 minutes)"):
+            try:
+                buf, filename = generate_deck(
+                    selected_pf_id, customer_name, data=data,
+                    questionnaire_name=questionnaire_name,
+                )
+            except Exception as e:
+                st.error(f"Deck generation failed: {e}")
+                return
+
+        with st.spinner("Uploading to Google Drive..."):
+            try:
+                result = sheets.upload_pptx_to_drive(
+                    buf, filename, M2_OUTPUT_FOLDER_ID, convert_to_slides=True,
+                )
+            except Exception as e:
+                st.error(f"Upload to Drive failed: {e}")
+                # Offer local download as fallback
+                buf.seek(0)
+                st.download_button(
+                    "Download PPTX locally",
+                    data=buf,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+                return
+
+        slide_url = result["url"]
+        slide_name = result["name"]
+
+        st.success("Strategy deck generated and uploaded successfully.")
+        st.markdown(
+            f"### [{slide_name}]({slide_url})",
+            help="Click to open the generated Google Slides presentation.",
+        )
+        st.link_button("Open deck", slide_url, type="primary")
