@@ -466,16 +466,23 @@ def move_slide(prs, src, dst):
         entries[dst].addprevious(el)
 
 def replace_text(shape, new_text):
-    """Set shape text preserving first-run formatting."""
+    """Set shape text preserving first-run formatting, clearing all other paragraphs."""
     if not shape.has_text_frame:
         return
-    for para in shape.text_frame.paragraphs:
-        if para.runs:
+    paras = shape.text_frame.paragraphs
+    placed = False
+    for i, para in enumerate(paras):
+        if not placed and para.runs:
             para.runs[0].text = str(new_text)
             for r in para.runs[1:]:
                 r.text = ''
-            return
-    shape.text_frame.paragraphs[0].text = str(new_text)
+            placed = True
+        elif placed:
+            # Clear subsequent paragraphs so old text doesn't linger
+            for r in para.runs:
+                r.text = ''
+    if not placed:
+        paras[0].text = str(new_text)
 
 def set_table_cell(cell, text):
     para = cell.text_frame.paragraphs[0]
@@ -1452,29 +1459,35 @@ def do_slide6(prs, pf, risk_profile):
         use_competitive = False
         diff = 0.0
 
+    # Debug: log all shapes on slide 6
+    for shape in slide.shapes:
+        if shape.has_text_frame:
+            txt_preview = shape.text_frame.text[:60].replace('\n', ' ')
+            print(f"  Slide 6 shape: name='{shape.name}' text='{txt_preview}'")
+
+    matched_220 = matched_216 = matched_217 = False
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
         name = shape.name
+        text = shape.text_frame.text.lower()
 
-        if name == 'Google Shape;220;p21':
-            # Box 01 description — has 8 runs; run[2]=years, run[6]=corpus value
-            runs = shape.text_frame.paragraphs[0].runs
-            if len(runs) >= 7:
-                runs[2].text = str(years_int)
-                runs[6].text = cv_str
-            else:
-                replace_text(shape, f'SIPs & lump sum over {years_int} years building a corpus of {cv_str}')
+        # Box 01 description — match by name or text content
+        if name == 'Google Shape;220;p21' or (not matched_220 and 'lump sum' in text and 'corpus' in text):
+            matched_220 = True
+            replace_text(shape, f'SIPs & lump sum over {years_int} years building a corpus of {cv_str}')
 
-        elif name == 'Google Shape;216;p21':
-            # Box 02 title
+        # Box 02 title — match by name or text content
+        elif name == 'Google Shape;216;p21' or (not matched_216 and ('competitive' in text or 'aligned' in text or 'delivering' in text)):
+            matched_216 = True
             if use_competitive:
                 replace_text(shape, 'Delivering competitive returns')
             else:
                 replace_text(shape, 'Aligned to your risk profile')
 
-        elif name == 'Google Shape;217;p21':
-            # Box 02 description
+        # Box 02 description — match by name or text content
+        elif name == 'Google Shape;217;p21' or (not matched_217 and ('edged past' in text or 'risk level' in text or 'benchmark' in text)):
+            matched_217 = True
             if use_competitive:
                 replace_text(shape, f"Portfolio performance has edged past benchmark by {diff:.1f}%, you're on the right track")
             else:
@@ -1595,10 +1608,19 @@ def do_slide13(prs, pf_id, risk_profile, data):
     buf13.seek(0)
 
     # ── Replace slide 13 chart image (;338) ───────────────────────────────────
+    removed = False
     for shape in list(slide.shapes):
         if ';338;' in shape.name:
             remove_shape(slide, shape)
+            removed = True
             break
+    # Fallback: remove the largest image on the slide (the old chart)
+    if not removed:
+        from pptx.shapes.picture import Picture
+        pics = [s for s in slide.shapes if isinstance(s, Picture)]
+        if pics:
+            biggest = max(pics, key=lambda p: p.width * p.height)
+            remove_shape(slide, biggest)
 
     new_pic = slide.shapes.add_picture(
         buf13,
@@ -1611,22 +1633,30 @@ def do_slide13(prs, pf_id, risk_profile, data):
     sp_tree.remove(new_el)
     sp_tree.insert(2, new_el)
 
+    # ── Debug: log all shapes on slide 13 ────────────────────────────────────
+    for shape in slide.shapes:
+        if shape.has_text_frame:
+            txt_preview = shape.text_frame.text[:60].replace('\n', ' ')
+            print(f"  Slide 13 shape: name='{shape.name}' text='{txt_preview}'")
+
     # ── Update text shapes ─────────────────────────────────────────────────────
+    inv_str = fmt_inr_rupee(inv_df['INVESTED_AMOUNT'].iloc[-1] if not inv_df.empty else 0).replace('₹', '')
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
-        if ';329;' in shape.name:
+        name = shape.name
+        text = shape.text_frame.text.strip()
+
+        if ';329;' in name or (text.startswith('Infinite') and len(text) < 40):
             replace_text(shape, f'Infinite {risk_profile}')
-        elif ';334;' in shape.name:
-            # Actual final value (lower position)
+        elif ';334;' in name:
             replace_text(shape, fmt_inr_rupee(pf_final).replace('₹', ''))
-        elif ';335;' in shape.name:
-            # Infinite final value (higher position)
+        elif ';335;' in name:
             replace_text(shape, fmt_inr_rupee(inf_final).replace('₹', ''))
 
     # ── Update XIRR table (;327): row[1] col[1]=Infinite, col[2]=Actual ───────
     for shape in slide.shapes:
-        if ';327;' in shape.name and shape.has_table:
+        if shape.has_table:
             tbl = shape.table
             set_table_cell(tbl.cell(1, 1), f'{inf_xirr * 100:.2f}%')
             set_table_cell(tbl.cell(1, 2), f'{pf_xirr * 100:.2f}%')
