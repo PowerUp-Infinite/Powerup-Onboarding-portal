@@ -15,12 +15,12 @@ load_dotenv()
 
 def _get(key: str, default: str | None = None) -> str | None:
     """Read a config value from env vars first, then st.secrets."""
-    val = _get(key)
+    val = os.getenv(key)
     if val:
         return val
     try:
-        import streamlit as st
-        return st.secrets.get(key, default)
+        from streamlit import secrets
+        return secrets.get(key, default)
     except Exception:
         return default
 
