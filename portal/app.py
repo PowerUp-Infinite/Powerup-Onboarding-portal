@@ -11,10 +11,20 @@ Four tabs:
   Tab 4  Data Manager               — upload + deduplicate + write shared data to Sheets
 """
 
+import os
 import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Streamlit Cloud: inject secrets into os.environ BEFORE importing
+# any other module (config.py reads os.environ at import time).
+try:
+    for key, val in st.secrets.items():
+        if isinstance(val, str) and key not in os.environ:
+            os.environ[key] = val
+except FileNotFoundError:
+    pass  # no secrets file (local dev uses .env instead)
 
 from google_auth import check_auth
 from tabs import data_manager, m1_report, m2_deck, m3_deck
