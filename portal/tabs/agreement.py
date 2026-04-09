@@ -100,7 +100,7 @@ def render():
         )
 
         slabs_input = []
-        for i in range(slab_count):
+        for i in range(int(slab_count)):
             col_fee, col_aua = st.columns(2)
             with col_fee:
                 fee = st.text_input(
