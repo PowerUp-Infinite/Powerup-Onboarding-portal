@@ -2,45 +2,50 @@
 config.py — all environment variable definitions for PowerUp Portal.
 All IDs, paths, and endpoints live here. Nothing hardcoded elsewhere.
 
+Values are read lazily from os.environ on first access, NOT at import time.
+This ensures st.secrets → os.environ injection in app.py runs first.
+
 Locally:   values come from .env via python-dotenv
-On Cloud:  app.py injects st.secrets into os.environ before this module loads
+On Cloud:  app.py injects st.secrets into os.environ at startup
 """
 
 import os
 
+# ── Env-var key mapping ───────────────────────────────────────
+# Maps config attribute name → (env var name, default value)
+_ENV_KEYS: dict[str, tuple[str, str | None]] = {
+    "GOOGLE_SERVICE_ACCOUNT_JSON": ("GOOGLE_SERVICE_ACCOUNT_JSON", None),
+    "M1_APPS_SCRIPT_URL":         ("M1_APPS_SCRIPT_URL", None),
+    "M2_TEMPLATE_ID":             ("M2_TEMPLATE_ID", None),
+    "M2_RISK_REWARD_TEMPLATE_ID": ("M2_RISK_REWARD_TEMPLATE_ID", None),
+    "M3_TEMPLATE_ID":             ("M3_TEMPLATE_ID", None),
+    "MAIN_SPREADSHEET_ID":        ("MAIN_SPREADSHEET_ID", None),
+    "M3_SPREADSHEET_ID":          ("M3_SPREADSHEET_ID", None),
+    "TIMESERIES_SPREADSHEET_ID":  ("TIMESERIES_SPREADSHEET_ID", None),
+    "TIMESERIES_ROW_LIMIT":       ("TIMESERIES_ROW_LIMIT", "1000000"),
+    "QUESTIONNAIRE_SPREADSHEET_ID": ("QUESTIONNAIRE_SPREADSHEET_ID", None),
+    "M2_CATEGORIZATION_FILE_ID":  ("M2_CATEGORIZATION_FILE_ID", None),
+    "M2_IMG_INFORM_ID":           ("M2_IMG_INFORM_ID", None),
+    "M2_IMG_ONTRACK_ID":          ("M2_IMG_ONTRACK_ID", None),
+    "M2_IMG_OFFTRACK_ID":         ("M2_IMG_OFFTRACK_ID", None),
+    "M2_IMG_OUTOFFORM_ID":        ("M2_IMG_OUTOFFORM_ID", None),
+    "DRIVE_ROOT_FOLDER_ID":       ("DRIVE_ROOT_FOLDER_ID", None),
+    "M1_OUTPUT_FOLDER_ID":        ("M1_OUTPUT_FOLDER_ID", None),
+    "M2_OUTPUT_FOLDER_ID":        ("M2_OUTPUT_FOLDER_ID", None),
+    "M3_OUTPUT_FOLDER_ID":        ("M3_OUTPUT_FOLDER_ID", None),
+}
 
-# ── Google Service Account ────────────────────────────────────
-GOOGLE_SERVICE_ACCOUNT_JSON: str | None = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-# ── M1 ────────────────────────────────────────────────────────
-M1_APPS_SCRIPT_URL: str | None = os.environ.get("M1_APPS_SCRIPT_URL")
+def __getattr__(name: str):
+    """Lazy lookup: read os.environ when the attribute is first accessed."""
+    if name in _ENV_KEYS:
+        env_key, default = _ENV_KEYS[name]
+        val = os.environ.get(env_key, default)
+        if name == "TIMESERIES_ROW_LIMIT":
+            return int(val) if val else 1000000
+        return val
+    raise AttributeError(f"module 'config' has no attribute {name!r}")
 
-# ── M2 ────────────────────────────────────────────────────────
-M2_TEMPLATE_ID: str | None = os.environ.get("M2_TEMPLATE_ID")
-M2_RISK_REWARD_TEMPLATE_ID: str | None = os.environ.get("M2_RISK_REWARD_TEMPLATE_ID")
-
-# ── M3 ────────────────────────────────────────────────────────
-M3_TEMPLATE_ID: str | None = os.environ.get("M3_TEMPLATE_ID")
-
-# ── Spreadsheets ──────────────────────────────────────────────
-MAIN_SPREADSHEET_ID: str | None = os.environ.get("MAIN_SPREADSHEET_ID")
-M3_SPREADSHEET_ID: str | None = os.environ.get("M3_SPREADSHEET_ID")
-TIMESERIES_SPREADSHEET_ID: str | None = os.environ.get("TIMESERIES_SPREADSHEET_ID")
-TIMESERIES_ROW_LIMIT: int = int(os.environ.get("TIMESERIES_ROW_LIMIT", "1000000"))
-QUESTIONNAIRE_SPREADSHEET_ID: str | None = os.environ.get("QUESTIONNAIRE_SPREADSHEET_ID")
-
-# ── M2 Assets on Drive ────────────────────────────────────────
-M2_CATEGORIZATION_FILE_ID: str | None = os.environ.get("M2_CATEGORIZATION_FILE_ID")
-M2_IMG_INFORM_ID: str | None = os.environ.get("M2_IMG_INFORM_ID")
-M2_IMG_ONTRACK_ID: str | None = os.environ.get("M2_IMG_ONTRACK_ID")
-M2_IMG_OFFTRACK_ID: str | None = os.environ.get("M2_IMG_OFFTRACK_ID")
-M2_IMG_OUTOFFORM_ID: str | None = os.environ.get("M2_IMG_OUTOFFORM_ID")
-
-# ── Drive Folders ─────────────────────────────────────────────
-DRIVE_ROOT_FOLDER_ID: str | None = os.environ.get("DRIVE_ROOT_FOLDER_ID")
-M1_OUTPUT_FOLDER_ID: str | None = os.environ.get("M1_OUTPUT_FOLDER_ID")
-M2_OUTPUT_FOLDER_ID: str | None = os.environ.get("M2_OUTPUT_FOLDER_ID")
-M3_OUTPUT_FOLDER_ID: str | None = os.environ.get("M3_OUTPUT_FOLDER_ID")
 
 # ── Sheet tab names (single source of truth) ──────────────────
 class MainSheets:
