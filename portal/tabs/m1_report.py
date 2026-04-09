@@ -20,6 +20,59 @@ import sheets
 from config import M1_APPS_SCRIPT_URL, M1_OUTPUT_FOLDER_ID
 
 
+# ── Tab name → upsert function mapping ──────────────────────
+_TAB_UPSERT_MAP = {
+    'PF_level':            sheets.upsert_pf_level,
+    'Scheme_level':        sheets.upsert_scheme_level,
+    'Riskgroup_level':     sheets.upsert_riskgroup_level,
+    'Results':             sheets.upsert_results,
+    'Lines':               sheets.upsert_lines,
+    'Invested_Value_Line': sheets.upsert_invested_value_line,
+}
+
+_TAB_ALIASES = {}
+for _canonical in _TAB_UPSERT_MAP:
+    _TAB_ALIASES[_canonical.lower()] = _canonical
+    _TAB_ALIASES[_canonical.lower().replace('_', '')] = _canonical
+    _TAB_ALIASES[_canonical.lower().replace('_', ' ')] = _canonical
+
+
+def _sync_upload_to_sheets(uploaded_file) -> list[str]:
+    """Parse uploaded Excel and upsert each recognised tab into Google Sheets."""
+    synced = []
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+    except Exception:
+        try:
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file, low_memory=False)
+            df.columns = [c.strip() for c in df.columns]
+            if 'PF_ID' in df.columns:
+                sheets.upsert_pf_level(df)
+                synced.append('PF_level')
+        except Exception:
+            pass
+        return synced
+
+    for sheet_name in xls.sheet_names:
+        canonical = _TAB_ALIASES.get(sheet_name.strip().lower())
+        if not canonical:
+            continue
+        upsert_fn = _TAB_UPSERT_MAP[canonical]
+        try:
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            df.columns = [c.lstrip('\ufeff').strip() for c in df.columns]
+            if df.empty:
+                continue
+            upsert_fn(df)
+            synced.append(canonical)
+        except Exception as e:
+            st.warning(f"Could not sync tab '{sheet_name}': {e}")
+
+    uploaded_file.seek(0)
+    return synced
+
+
 # ── helpers ──────────────────────────────────────────────────
 
 
@@ -274,6 +327,19 @@ def render():
     # ── Generate button ───────────────────────────────────────
     if st.button("Generate Report", type="primary", use_container_width=True):
         display = labels[pf_ids.index(selected_pf_id)]
+
+        # ── Sync uploaded data to Google Sheets ──────────────
+        if source == "upload" and uploaded:
+            with st.spinner("Syncing uploaded data to Google Sheets..."):
+                try:
+                    uploaded.seek(0)
+                    synced = _sync_upload_to_sheets(uploaded)
+                    if synced:
+                        st.success(f"Synced {len(synced)} tabs: {', '.join(synced)}")
+                except Exception as e:
+                    st.error(f"Failed to sync uploaded data: {e}")
+                    return
+
         with st.spinner(f"Generating report for {display}... (this can take up to 60 seconds)"):
             try:
                 result = _call_apps_script(selected_pf_id)

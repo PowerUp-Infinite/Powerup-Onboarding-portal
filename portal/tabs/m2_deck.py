@@ -20,6 +20,65 @@ from config import M2_OUTPUT_FOLDER_ID
 from m2_engine import generate_deck, load_data
 
 
+# ── Tab name → upsert function mapping ──────────────────────
+_TAB_UPSERT_MAP = {
+    'PF_level':            sheets.upsert_pf_level,
+    'Scheme_level':        sheets.upsert_scheme_level,
+    'Riskgroup_level':     sheets.upsert_riskgroup_level,
+    'Results':             sheets.upsert_results,
+    'Lines':               sheets.upsert_lines,
+    'Invested_Value_Line': sheets.upsert_invested_value_line,
+}
+
+# Case-insensitive lookup for common tab name variations
+_TAB_ALIASES = {}
+for _canonical in _TAB_UPSERT_MAP:
+    _TAB_ALIASES[_canonical.lower()] = _canonical
+    _TAB_ALIASES[_canonical.lower().replace('_', '')] = _canonical
+    _TAB_ALIASES[_canonical.lower().replace('_', ' ')] = _canonical
+
+
+def _sync_upload_to_sheets(uploaded_file) -> list[str]:
+    """
+    Parse the uploaded Excel and upsert each recognised tab into Google Sheets.
+    Returns list of tab names that were synced.
+    """
+    synced = []
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+    except Exception:
+        # Single-sheet CSV — try PF_level as a guess
+        try:
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file, low_memory=False)
+            df.columns = [c.strip() for c in df.columns]
+            if 'PF_ID' in df.columns:
+                sheets.upsert_pf_level(df)
+                synced.append('PF_level')
+        except Exception:
+            pass
+        return synced
+
+    for sheet_name in xls.sheet_names:
+        canonical = _TAB_ALIASES.get(sheet_name.strip().lower())
+        if not canonical:
+            continue
+        upsert_fn = _TAB_UPSERT_MAP[canonical]
+        try:
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            df.columns = [c.lstrip('\ufeff').strip() for c in df.columns]
+            if df.empty:
+                continue
+            upsert_fn(df)
+            synced.append(canonical)
+        except Exception as e:
+            st.warning(f"Could not sync tab '{sheet_name}': {e}")
+
+    # Reset file pointer so _clients_from_upload can re-read it
+    uploaded_file.seek(0)
+    return synced
+
+
 # ── helpers ──────────────────────────────────────────────────
 
 
@@ -313,6 +372,26 @@ def render():
                 sheets.save_pf_id_mapping(selected_pf_id, questionnaire_name)
             except Exception:
                 pass  # non-critical — don't block generation
+
+        # ── Sync uploaded data to Google Sheets ──────────────
+        if source == "upload" and uploaded:
+            with st.spinner("Syncing uploaded data to Google Sheets..."):
+                try:
+                    uploaded.seek(0)
+                    synced = _sync_upload_to_sheets(uploaded)
+                    if synced:
+                        st.success(f"Synced {len(synced)} tabs: {', '.join(synced)}")
+                        # Clear cached data so load_data picks up new rows
+                        _load_clients_from_sheets.clear()
+                    else:
+                        st.warning(
+                            "No recognised data tabs found in the uploaded file. "
+                            "Expected tabs: PF_level, Scheme_level, Riskgroup_level, "
+                            "Results, Lines, Invested_Value_Line"
+                        )
+                except Exception as e:
+                    st.error(f"Failed to sync uploaded data: {e}")
+                    return
 
         with st.spinner(f"Loading data for {display}..."):
             try:
