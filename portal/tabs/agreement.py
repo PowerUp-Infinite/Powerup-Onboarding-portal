@@ -88,13 +88,19 @@ def render():
 
     custom_slabs = None
     if slab_mode == "Custom":
-        st.caption("Enter fee slabs. Add or remove rows as needed.")
+        st.caption("Enter fee slabs. Use the number input to set how many rows you need.")
 
-        if "ag_slab_count" not in st.session_state:
-            st.session_state.ag_slab_count = 1
+        slab_count = st.number_input(
+            "Number of fee slabs",
+            min_value=1,
+            max_value=10,
+            value=1,
+            step=1,
+            key="ag_slab_count",
+        )
 
         slabs_input = []
-        for i in range(st.session_state.ag_slab_count):
+        for i in range(slab_count):
             col_fee, col_aua = st.columns(2)
             with col_fee:
                 fee = st.text_input(
@@ -113,17 +119,6 @@ def render():
                 if "p.a" not in fee_val.lower():
                     fee_val = fee_val + " p.a."
                 slabs_input.append({"fee": fee_val, "aua": aua.strip()})
-
-        col_add, col_remove = st.columns(2)
-        with col_add:
-            if st.button("+ Add slab", key="ag_add_slab"):
-                st.session_state.ag_slab_count += 1
-                st.rerun()
-        with col_remove:
-            if st.session_state.ag_slab_count > 1:
-                if st.button("- Remove last slab", key="ag_remove_slab"):
-                    st.session_state.ag_slab_count -= 1
-                    st.rerun()
 
         if slabs_input:
             custom_slabs = slabs_input
