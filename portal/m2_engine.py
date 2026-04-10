@@ -858,6 +858,11 @@ def _make_pie(slide, rg):
         g = row['RISK_GROUP_L0']
         p = row['% of PF']
         if pd.isna(p) or p <= 0: continue
+        # Skip rows with missing or unknown risk group (NaN / blank). These
+        # are dust rows in Riskgroup_level that would otherwise crash the
+        # legend writer with "Argument must be bytes or unicode, got float".
+        if g is None or (isinstance(g, float) and pd.isna(g)) or str(g).strip() == '':
+            continue
         parts.append((CHART_LABELS.get(g, g), p * 100, CHART_COLORS.get(g, '#808080')))
     if not parts:
         print("  Slide 4: empty riskgroup — skipping chart"); return
@@ -1055,42 +1060,80 @@ def _update_legend_groups(slide, parts, eq_total):
     for label, pct, color in extra_cats:
         clone_el = deepcopy(hybrid_grp._element)
 
-        # Reposition the cloned group via its xfrm off element
-        xfrm = clone_el.find(f'.//{{{NS_A}}}xfrm')
-        if xfrm is not None:
-            off = xfrm.find(f'{{{NS_A}}}off')
-            if off is not None:
-                off.set('y', str(next_top))
+        # Reposition the cloned group — only the TOP-LEVEL group's grpSpPr
+        # xfrm off.y should be touched. Using .find('.//xfrm') returns the
+        # FIRST xfrm anywhere (which is the group's own), but to be explicit
+        # we walk into grpSpPr directly so we never accidentally move a
+        # child's xfrm.
+        grpSpPr = clone_el.find(f'{{{NS_P}}}grpSpPr')
+        if grpSpPr is not None:
+            xfrm = grpSpPr.find(f'{{{NS_A}}}xfrm')
+            if xfrm is not None:
+                off = xfrm.find(f'{{{NS_A}}}off')
+                if off is not None:
+                    off.set('y', str(next_top))
 
-        # Update children inside the clone: color dot, label, pct
+        # Update children: identify the HYBRID LABEL shape (text == "Hybrid")
+        # and the PERCENTAGE shape (text contains "%") by CURRENT text content.
+        # Empty shapes (the background rect, the coloured dot) must be left
+        # alone — they are NOT percentage fields.
+        label_sp   = None
+        pct_sp     = None
+        dot_fill   = None
         for child_el in clone_el.iter(f'{{{NS_P}}}sp'):
-            spPr = child_el.find(f'{{{NS_P}}}spPr')
             txBody = child_el.find(f'{{{NS_P}}}txBody')
-
-            # Color dot: has solidFill
-            if spPr is not None:
-                solidFill = spPr.find(f'.//{{{NS_A}}}solidFill')
-                if solidFill is not None:
-                    clr = solidFill.find(f'{{{NS_A}}}srgbClr')
-                    if clr is not None:
-                        clr.set('val', color.lstrip('#'))
-
-            # Text shapes: label or pct
+            raw = ''
             if txBody is not None:
-                t_els = txBody.findall(f'.//{{{NS_A}}}t')
-                if t_els:
-                    raw = ''.join(t.text or '' for t in t_els).strip()
-                    if '%' in raw or raw == '':
-                        # Percentage field
-                        pct_text = '<1%' if pct < 1 else f'{pct:.0f}%'
-                        t_els[0].text = pct_text
-                        for t in t_els[1:]:
-                            t.text = ''
-                    else:
-                        # Label field (was 'Hybrid')
-                        t_els[0].text = label
-                        for t in t_els[1:]:
-                            t.text = ''
+                raw = ''.join(
+                    (t.text or '') for t in txBody.findall(f'.//{{{NS_A}}}t')
+                ).strip()
+            if raw == 'Hybrid':
+                label_sp = child_el
+            elif '%' in raw:
+                pct_sp = child_el
+            elif raw == '':
+                # Candidate for color dot — pick the SMALLEST solid-filled
+                # shape (the dot, not the background rect).
+                spPr = child_el.find(f'{{{NS_P}}}spPr')
+                if spPr is not None:
+                    sf = spPr.find(f'.//{{{NS_A}}}solidFill')
+                    if sf is not None:
+                        clr = sf.find(f'{{{NS_A}}}srgbClr')
+                        if clr is not None:
+                            # Track the one with the smallest ext (the dot).
+                            xf = spPr.find(f'{{{NS_A}}}xfrm')
+                            if xf is not None:
+                                ext = xf.find(f'{{{NS_A}}}ext')
+                                if ext is not None:
+                                    try:
+                                        area = int(ext.get('cx', 0)) * int(ext.get('cy', 0))
+                                    except (TypeError, ValueError):
+                                        area = 0
+                                    if dot_fill is None or area < dot_fill[0]:
+                                        dot_fill = (area, clr)
+
+        # Write the label text
+        if label_sp is not None:
+            txBody = label_sp.find(f'{{{NS_P}}}txBody')
+            t_els = txBody.findall(f'.//{{{NS_A}}}t') if txBody is not None else []
+            if t_els:
+                t_els[0].text = label
+                for t in t_els[1:]:
+                    t.text = ''
+
+        # Write the percentage text
+        if pct_sp is not None:
+            txBody = pct_sp.find(f'{{{NS_P}}}txBody')
+            t_els = txBody.findall(f'.//{{{NS_A}}}t') if txBody is not None else []
+            if t_els:
+                pct_text = '<1%' if pct < 1 else f'{pct:.0f}%'
+                t_els[0].text = pct_text
+                for t in t_els[1:]:
+                    t.text = ''
+
+        # Recolor the dot
+        if dot_fill is not None:
+            dot_fill[1].set('val', color.lstrip('#'))
 
         slide.shapes._spTree.append(clone_el)
         next_top += hybrid_grp.height + 80000
