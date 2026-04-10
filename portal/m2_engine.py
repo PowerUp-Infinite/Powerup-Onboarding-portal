@@ -138,10 +138,11 @@ CHART_LABELS = {
 RISK_SCALE = ['Very Conservative', 'Conservative', 'Balanced', 'Aggressive', 'Very Aggressive']
 
 HORIZON_DISPLAY = {
-    'short':'Less than 3 Years','less than 3':'Less than 3 Years',
-    '3-5':'3-5 Years','medium-term':'3-5 Years',
-    '5-7':'5-7 Years','medium to long':'5-7 Years',
-    'more than 7':'8+ Years','more than 8':'8+ Years',
+    # Most-specific keys first — dict iteration order is insertion order.
+    'more than 8':'8+ Years','more than 7':'8+ Years',
+    '5-8':'5-8 Years','medium to long':'5-8 Years',
+    '3-5':'3-5 Years','3–5':'3-5 Years','medium-term':'3-5 Years',
+    'less than 3':'Less than 3 Years','short':'Less than 3 Years',
     'long-term':'8+ Years','long':'8+ Years',
 }
 
@@ -565,6 +566,9 @@ def do_slide3(prs, q_row, risk_profile):
     except (TypeError, ValueError):
         # Could be "10%" string
         step_up = float(str(stepup_raw).rstrip('%')) if str(stepup_raw).rstrip('%').replace('.','').isdigit() else 0.0
+    # Data stored as fraction (0.2 = 20%) — normalize to percent for display
+    if 0 < step_up < 1:
+        step_up *= 100
     has_stepup = step_up > 0
 
     shapes_to_remove = []
@@ -713,6 +717,23 @@ def _portfolio_risk(sm):
     if sm < 45:  return 'Aggressive'
     return 'Very Aggressive'
 
+def _max_font_emu(shape):
+    """Return the largest font size (in EMU) across all runs, or 0."""
+    if not shape.has_text_frame:
+        return 0
+    mx = 0
+    for para in shape.text_frame.paragraphs:
+        for r in para.runs:
+            if r.font.size is not None:
+                try:
+                    sz = int(r.font.size)
+                    if sz > mx:
+                        mx = sz
+                except Exception:
+                    pass
+    return mx
+
+
 def do_slide4(prs, pf, rg_agg, risk_profile):
     slide = prs.slides[3]
     cv   = pf['PF_CURRENT_VALUE']
@@ -725,46 +746,103 @@ def do_slide4(prs, pf, rg_agg, risk_profile):
     pf_risk = _portfolio_risk(sm)
     matches = pf_risk == risk_profile
 
-    name_val = {
-        'Google Shape;165;p19': fmt_inr_rupee(cv),
-        'Google Shape;163;p19': fmt_inr_rupee(iv),
-        'Google Shape;161;p19': f'{xirr * 100:.1f}%',
-        'Google Shape;159;p19': f'{bxir * 100:.1f}%',
-    }
+    # ── Classify top-level text shapes as labels or values by font size ──
+    # Labels are small (≈133350 EMU / 10.5pt), values are big (≈254000 EMU / 20pt)
+    text_shapes = [s for s in slide.shapes if s.has_text_frame]
+    labels = []
+    values = []
+    for s in text_shapes:
+        sz = _max_font_emu(s)
+        txt = s.text_frame.text.strip()
+        if not txt:
+            continue
+        if sz >= 200000:
+            values.append(s)
+        elif 90000 <= sz < 200000:
+            labels.append(s)
+
+    def _value_below(label):
+        """Find nearest large-font shape directly below this label."""
+        if label is None:
+            return None
+        lL, lT, lW = label.left, label.top, label.width
+        best, best_dy = None, 1 << 30
+        for v in values:
+            if v.top <= lT:
+                continue
+            # Horizontal overlap
+            if v.left > lL + lW or v.left + v.width < lL:
+                continue
+            dy = v.top - lT
+            if dy < best_dy and dy < 600000:   # within ~0.6M EMU ≈ 0.6 inch
+                best_dy, best = dy, v
+        return best
+
+    def _label_by_keywords(*keywords):
+        """Find label shape whose lowered text contains ALL the given keywords."""
+        for lbl in labels:
+            txt = lbl.text_frame.text.strip().lower()
+            if all(k in txt for k in keywords):
+                return lbl
+        return None
+
+    # Metric → (label keywords, formatted value)
+    metrics = [
+        ('Current Value',   _label_by_keywords('current', 'value'),  fmt_inr_rupee(cv)),
+        ('Invested Amount', _label_by_keywords('invested'),          fmt_inr_rupee(iv)),
+        ('Current XIRR',    _label_by_keywords('current', 'xirr'),   f'{xirr * 100:.1f}%'),
+        ('Benchmark XIRR',  _label_by_keywords('benchmark', 'xirr'), f'{bxir * 100:.1f}%'),
+    ]
+    for name, lbl, new_val in metrics:
+        if lbl is None:
+            print(f"  Slide 4: WARN label not found for {name!r}")
+            continue
+        val_sh = _value_below(lbl)
+        if val_sh is None:
+            print(f"  Slide 4: WARN value shape not found for {name!r}")
+            continue
+        replace_text(val_sh, new_val)
+        print(f"  Slide 4: {name} -> {new_val}")
+
+    # Portfolio risk: label contains 'risk'
+    risk_lbl = _label_by_keywords('portfolio', 'risk') or _label_by_keywords('risk', 'profile') or _label_by_keywords('risk')
+    risk_val_sh = _value_below(risk_lbl)
+    if risk_val_sh is not None:
+        replace_text(risk_val_sh, pf_risk)
+        print(f"  Slide 4: portfolio risk (S+M={sm:.0f}%) -> '{pf_risk}'")
+    else:
+        print(f"  Slide 4: WARN could not find risk value shape")
+
+    # Match/no-match + gains + S+M — match by text content
+    match_text   = "Matches your risk profile"
+    nomatch_text = "Doesn't match your risk profile"
+    match_color   = RGBColor(0x2A, 0x9C, 0x4A)   # green
+    nomatch_color = RGBColor(0xCC, 0x00, 0x00)   # red
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
         txt = shape.text_frame.text.strip()
-        if shape.name in name_val:
-            replace_text(shape, name_val[shape.name])
-            print(f"  Slide 4: {shape.name.split(';')[1]} -> {name_val[shape.name]}")
-        elif 'Portfolio gains' in txt:
+        tl  = txt.lower()
+        if 'portfolio gains' in tl:
             replace_text(shape, f'Portfolio gains: {fmt_inr_rupee(pg)}')
             print(f"  Slide 4: PF gains -> {fmt_inr_rupee(pg)}")
-        elif 'Benchmark gains' in txt:
+        elif 'benchmark gains' in tl:
             replace_text(shape, f'Benchmark gains: {fmt_inr_rupee(bg)}')
             print(f"  Slide 4: BM gains -> {fmt_inr_rupee(bg)}")
-        elif 'Small' in txt and 'Mid' in txt:
+        elif 'small' in tl and 'mid' in tl and 'allocation' in tl:
             replace_text(shape, f'Small + Mid Allocation: {sm:.0f}%')
             print(f"  Slide 4: S+M -> {sm:.0f}%")
-        elif shape.name == 'Google Shape;157;p19':
-            replace_text(shape, pf_risk)
-            print(f"  Slide 4: portfolio risk (S+M={sm:.0f}%) -> '{pf_risk}'")
-        elif shape.name == 'Google Shape;195;p19':
-            # Shape has green+red runs baked in — pick the right one
-            tf = shape.text_frame
-            match_text   = "Matches your risk profile"
-            nomatch_text = "Doesn't match your risk profile"
-            match_color   = RGBColor(0x2A, 0x9C, 0x4A)   # green
-            nomatch_color = RGBColor(0xCC, 0x00, 0x00)    # red
+        elif 'match' in tl and 'risk profile' in tl:
             new_text  = match_text if matches else nomatch_text
             new_color = match_color if matches else nomatch_color
-            for para in tf.paragraphs:
+            replace_text(shape, new_text)
+            for para in shape.text_frame.paragraphs:
                 for run in para.runs:
-                    run.text       = new_text
-                    run.font.color.rgb = new_color
-                    new_text = ''   # only first run carries text; rest cleared
-            print(f"  Slide 4: match/no-match -> '{(match_text if matches else nomatch_text)}' "
+                    try:
+                        run.font.color.rgb = new_color
+                    except Exception:
+                        pass
+            print(f"  Slide 4: match/no-match -> '{new_text}' "
                   f"(pf_risk='{pf_risk}', q_risk='{risk_profile}')")
 
     _make_pie(slide, rg_agg)
@@ -791,7 +869,8 @@ def _make_pie(slide, rg):
         print("  Slide 4: empty riskgroup — skipping chart"); return
 
     eq_order    = ['Aggressive', 'Balanced', 'Conservative']
-    other_order = ['Hybrid', 'Gold & Silver', 'Debt', 'Solution', 'Global']
+    # Legend order from reference deck: Equity → Hybrid → Debt Like → Gold & Silver → Global → Solution
+    other_order = ['Hybrid', 'Debt', 'Gold & Silver', 'Global', 'Solution']
 
     def sk(x):
         if x[0] in eq_order:    return (0, eq_order.index(x[0]))
@@ -822,7 +901,7 @@ def _make_pie(slide, rg):
 
     ax.set_aspect('equal')
     ax.pie(
-        sizes, colors=colors, radius=1.0, startangle=90,
+        sizes, colors=colors, radius=1.0, startangle=90, counterclock=False,
         wedgeprops=dict(width=0.35, edgecolor='white', linewidth=2.5),
     )
     ax.axis('off')
@@ -835,11 +914,15 @@ def _make_pie(slide, rg):
     plt.close(fig)
     buf.seek(0)
 
-    # ── Locate shape ;155 (centre text — keep it, just get the element) ──────
-    shape_155_el = None
+    # ── Locate centre-text shape ("Portfolio / Allocation") by text content ──
+    center_text_el = None
     for shape in slide.shapes:
-        if ';155;' in shape.name:
-            shape_155_el = shape._element
+        if not shape.has_text_frame:
+            continue
+        txt = shape.text_frame.text.strip().lower()
+        if 'allocation' in txt and ('portfolio' in txt or len(txt) < 30):
+            center_text_el = shape._element
+            break
 
     # ── Remove old pie-chart image (large, height > 1 M EMU) ─────────────────
     for shape in list(slide.shapes):
@@ -862,13 +945,13 @@ def _make_pie(slide, rg):
         Emu(PIE_IMG_WIDTH), Emu(PIE_IMG_HEIGHT),
     )
 
-    # Move new picture behind shape ;155 so the centre text stays on top
-    if shape_155_el is not None:
+    # Move new picture behind centre-text so the centre text stays on top
+    if center_text_el is not None:
         sp_tree = slide.shapes._spTree
         new_el  = new_pic._element
         sp_tree.remove(new_el)
-        shape_155_el.addprevious(new_el)
-        print("  Slide 4: donut placed behind shape ;155")
+        center_text_el.addprevious(new_el)
+        print("  Slide 4: donut placed behind centre text")
 
     # ── Update existing legend group text ─────────────────────────────────────
     _update_legend_groups(slide, parts, eq_total)
@@ -878,29 +961,36 @@ def _make_pie(slide, rg):
 def _update_legend_groups(slide, parts, eq_total):
     """
     Update percentage (and optionally label) text in the existing base-deck
-    legend groups.  Shape-name pairs from base deck:
-      ;177/;178  Conservative label/pct
-      ;179/;180  Balanced      label/pct
-      ;181/;182  Aggressive    label/pct
-      ;183/;184  Equity total  label/pct
-      ;188/;189  Hybrid        label/pct  (also used as template for extra categories)
+    legend groups. Matches label shapes by TEXT CONTENT
+    (Conservative/Balanced/Aggressive/Equity/Hybrid) rather than by shape IDs,
+    so it survives template edits.
     Extra non-equity categories (Debt, Gold & Silver, etc.) get cloned rows.
     """
     pct_map = {lb: pc for lb, pc, _ in parts}
     col_map = {lb: col for lb, _, col in parts}
 
-    LEGEND_MAP = {
-        ';177;': ('Conservative', False),
-        ';178;': ('Conservative', True),
-        ';179;': ('Balanced',     False),
-        ';180;': ('Balanced',     True),
-        ';181;': ('Aggressive',   False),
-        ';182;': ('Aggressive',   True),
-        ';183;': ('Equity',       False),
-        ';184;': ('Equity',       True),
-        ';188;': ('Hybrid',       False),
-        ';189;': ('Hybrid',       True),
-    }
+    KNOWN_LABELS = {'Conservative', 'Balanced', 'Aggressive', 'Equity', 'Hybrid'}
+
+    def _update_pct(pct_shape, cat):
+        val = eq_total if cat == 'Equity' else pct_map.get(cat, 0)
+        if val <= 0:
+            new_text = ''
+        elif val < 1:
+            new_text = '<1%'
+        else:
+            new_text = f'{val:.0f}%'
+        para = pct_shape.text_frame.paragraphs[0]
+        if para.runs:
+            para.runs[0].text = new_text
+            for r in para.runs[1:]:
+                r.text = ''
+        else:
+            para.text = new_text
+
+    def _hide_label(lbl_shape):
+        para = lbl_shape.text_frame.paragraphs[0]
+        if para.runs:
+            para.runs[0].text = ''
 
     for shape in slide.shapes:
         if shape.shape_type != 6:
@@ -910,37 +1000,38 @@ def _update_legend_groups(slide, parts, eq_total):
         except Exception:
             continue
 
+        # Find label shapes (exact text match) and pct shapes (contain '%')
+        label_shapes = []   # list of (cat, shape)
+        pct_shapes   = []
         for ch in children:
-            for key, (cat, is_pct) in LEGEND_MAP.items():
-                if key not in ch.name:
-                    continue
-                if not ch.has_text_frame:
-                    break
-                if is_pct:
-                    val = eq_total if cat == 'Equity' else pct_map.get(cat, 0)
-                    if val <= 0:
-                        new_text = ''
-                    elif val < 1:
-                        new_text = '<1%'
-                    else:
-                        new_text = f'{val:.0f}%'
-                    para = ch.text_frame.paragraphs[0]
-                    if para.runs:
-                        para.runs[0].text = new_text
-                        for r in para.runs[1:]:
-                            r.text = ''
-                    else:
-                        para.text = new_text
-                else:
-                    # Hide label if category absent for this customer
-                    if cat != 'Equity' and pct_map.get(cat, 0) == 0:
-                        para = ch.text_frame.paragraphs[0]
-                        if para.runs:
-                            para.runs[0].text = ''
-                break
+            if not ch.has_text_frame:
+                continue
+            txt = ch.text_frame.text.strip()
+            if txt in KNOWN_LABELS:
+                label_shapes.append((txt, ch))
+            elif '%' in txt:
+                pct_shapes.append(ch)
 
-    # ── Clone Hybrid group for extra non-equity categories ───────────────────
-    # e.g. Debt Like, Gold & Silver, Solution, Global — these have no static slot
+        # Pair each label with its nearest pct sibling (same row)
+        used_pct_ids = set()
+        for cat, lbl_sh in label_shapes:
+            # Prefer pct shape with closest top (same row)
+            best, best_dist = None, 1 << 30
+            for ps in pct_shapes:
+                if id(ps) in used_pct_ids:
+                    continue
+                dt = abs(ps.top - lbl_sh.top)
+                if dt < best_dist:
+                    best_dist, best = dt, ps
+            if best is None:
+                continue
+            used_pct_ids.add(id(best))
+            _update_pct(best, cat)
+            # Hide label (and its pct) if the category is absent for this customer
+            if cat != 'Equity' and pct_map.get(cat, 0) == 0:
+                _hide_label(lbl_sh)
+
+    # ── Clone the "Hybrid" group for extra non-equity categories ─────────────
     eq_labels = {'Aggressive', 'Balanced', 'Conservative'}
     extra_cats = [(lb, pc, col_map.get(lb, '#808080'))
                   for lb, pc, _ in parts
@@ -948,11 +1039,19 @@ def _update_legend_groups(slide, parts, eq_total):
     if not extra_cats:
         return
 
-    # Find the Hybrid group element (template for cloning)
+    # Find the Hybrid group: a GROUP that contains a child whose text == "Hybrid"
     hybrid_grp = None
     for shape in slide.shapes:
-        if ';185;' in shape.name:
-            hybrid_grp = shape
+        if shape.shape_type != 6:
+            continue
+        try:
+            for ch in shape.shapes:
+                if ch.has_text_frame and ch.text_frame.text.strip() == 'Hybrid':
+                    hybrid_grp = shape
+                    break
+        except Exception:
+            continue
+        if hybrid_grp is not None:
             break
     if hybrid_grp is None:
         return
@@ -1452,33 +1551,37 @@ def do_slide6(prs, pf, risk_profile):
         use_competitive = False
         diff = 0.0
 
+    box01_body = f'SIPs & lump sum over {years_int} years building a corpus of {cv_str}'
+    if use_competitive:
+        box02_heading = 'Delivering competitive returns'
+        box02_body    = f"Portfolio performance has edged past benchmark by {diff:.1f}%, you're on the right track"
+    else:
+        box02_heading = 'Aligned to your risk profile'
+        box02_body    = f'Your portfolio reflects your preferred risk level: {risk_profile}*'
+
+    # Match by existing template text content — resilient to shape-ID shifts.
+    # Box 01 heading is fixed ("Consistent investing discipline") — we leave it.
+    # Box 01 body starts with "SIPs & lump sum".
+    # Box 02 heading is one of the three variant titles.
+    # Box 02 body starts with "Solid absolute gains of" OR one of the variant bodies.
+    BOX02_HEADINGS = {
+        'Solid Absolute Gains',
+        'Delivering competitive returns',
+        'Aligned to your risk profile',
+    }
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
-        name = shape.name
-
-        if name == 'Google Shape;220;p21':
-            # Box 01 description — has 8 runs; run[2]=years, run[6]=corpus value
-            runs = shape.text_frame.paragraphs[0].runs
-            if len(runs) >= 7:
-                runs[2].text = str(years_int)
-                runs[6].text = cv_str
-            else:
-                replace_text(shape, f'SIPs & lump sum over {years_int} years building a corpus of {cv_str}')
-
-        elif name == 'Google Shape;216;p21':
-            # Box 02 title
-            if use_competitive:
-                replace_text(shape, 'Delivering competitive returns')
-            else:
-                replace_text(shape, 'Aligned to your risk profile')
-
-        elif name == 'Google Shape;217;p21':
-            # Box 02 description
-            if use_competitive:
-                replace_text(shape, f"Portfolio performance has edged past benchmark by {diff:.1f}%, you're on the right track")
-            else:
-                replace_text(shape, f'Your portfolio reflects your preferred risk level: {risk_profile}*')
+        txt = shape.text_frame.text.strip()
+        tl  = txt.lower()
+        if 'sips' in tl and 'lump sum' in tl:
+            replace_text(shape, box01_body)
+        elif txt in BOX02_HEADINGS:
+            replace_text(shape, box02_heading)
+        elif ('solid absolute gains of' in tl
+              or 'portfolio performance has edged' in tl
+              or 'portfolio reflects your preferred' in tl):
+            replace_text(shape, box02_body)
 
     variant = 'Delivering competitive returns' if use_competitive else 'Aligned to your risk profile'
     print(f"  Slide 6: {years_int}y, {cv_str}, variant='{variant}'")
@@ -1594,11 +1697,19 @@ def do_slide13(prs, pf_id, risk_profile, data):
     plt.close(fig)
     buf13.seek(0)
 
-    # ── Replace slide 13 chart image (;338) ───────────────────────────────────
+    # ── Remove the old chart PICTURE — find by size/position, not shape ID ───
     for shape in list(slide.shapes):
-        if ';338;' in shape.name:
-            remove_shape(slide, shape)
-            break
+        if (shape.shape_type == 13
+                and shape.width  > 3_000_000
+                and shape.height > 2_000_000
+                and shape.top    > 1_000_000):
+            try:
+                _ = shape.image
+                remove_shape(slide, shape)
+                print("  Slide 13: removed old chart image")
+                break
+            except Exception:
+                pass
 
     new_pic = slide.shapes.add_picture(
         buf13,
@@ -1611,22 +1722,39 @@ def do_slide13(prs, pf_id, risk_profile, data):
     sp_tree.remove(new_el)
     sp_tree.insert(2, new_el)
 
-    # ── Update text shapes ─────────────────────────────────────────────────────
+    # ── Update text shapes by content matching ────────────────────────────────
+    import re as _re
+    final_val_pattern = _re.compile(r'^[₹]?\s*[\d.]+\s*L\s*$', _re.IGNORECASE)
+
+    # Collect all final-value shapes (e.g., "41.5L", "49.7L") and sort by top:
+    # upper = Infinite, lower = Actual
+    final_value_shapes = []
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
-        if ';329;' in shape.name:
-            replace_text(shape, f'Infinite {risk_profile}')
-        elif ';334;' in shape.name:
-            # Actual final value (lower position)
-            replace_text(shape, fmt_inr_rupee(pf_final).replace('₹', ''))
-        elif ';335;' in shape.name:
-            # Infinite final value (higher position)
-            replace_text(shape, fmt_inr_rupee(inf_final).replace('₹', ''))
+        txt = shape.text_frame.text.strip()
+        if final_val_pattern.match(txt):
+            final_value_shapes.append(shape)
+    final_value_shapes.sort(key=lambda s: s.top)
+    if len(final_value_shapes) >= 2:
+        replace_text(final_value_shapes[0], fmt_inr_rupee(inf_final).replace('₹', ''))
+        replace_text(final_value_shapes[1], fmt_inr_rupee(pf_final).replace('₹', ''))
+    elif len(final_value_shapes) == 1:
+        replace_text(final_value_shapes[0], fmt_inr_rupee(inf_final).replace('₹', ''))
 
-    # ── Update XIRR table (;327): row[1] col[1]=Infinite, col[2]=Actual ───────
+    # Infinite label — text starts with "Infinite" and contains a risk-profile word
+    risk_words = ('Very Aggressive', 'Aggressive', 'Very Conservative', 'Conservative', 'Balanced')
     for shape in slide.shapes:
-        if ';327;' in shape.name and shape.has_table:
+        if not shape.has_text_frame:
+            continue
+        txt = shape.text_frame.text.strip()
+        if txt.startswith('Infinite') and any(w in txt for w in risk_words):
+            replace_text(shape, f'Infinite {risk_profile}')
+            break
+
+    # ── XIRR table: find the only TABLE on the slide ──────────────────────────
+    for shape in slide.shapes:
+        if shape.has_table:
             tbl = shape.table
             set_table_cell(tbl.cell(1, 1), f'{inf_xirr * 100:.2f}%')
             set_table_cell(tbl.cell(1, 2), f'{pf_xirr * 100:.2f}%')
@@ -1656,11 +1784,21 @@ def _iter_shapes_recursive(shapes):
 # QUESTIONNAIRE — answer lookup
 # ──────────────────────────────────────────────────────────────
 
-def _get_answer(question_text, q_row, context=''):
+def _is_post_retirement(q_row) -> bool:
+    """Detect post-retirement income planning case (already retired client)."""
+    if q_row is None or q_row.empty:
+        return False
+    goals = str(q_row.get('Goals', '')).lower()
+    return 'post-retirement' in goals or 'post retirement' in goals
+
+
+def _get_answer(question_text, q_row, context='', post_ret=False):
     """
     Map a questionnaire slide question to the customer's Excel answer.
     Returns the formatted answer string, or None if not matched.
     context: 'vehicle' | 'home' | '' — slide-level context for ambiguous questions.
+    post_ret: True when populating the post-retirement combo slide — pulls
+              answers from PostRet: columns instead of Ret: columns.
     """
     q = question_text.lower().strip()
 
@@ -1696,6 +1834,20 @@ def _get_answer(question_text, q_row, context=''):
     if 'monthly sip' in q and 'amount' in q:
         return _safe_inr(q_row.get('Monthly SIP Amount (with Infinite)', 0))
 
+    # Post-Retirement Income Planning slide (post_ret=True)
+    if post_ret:
+        if 'discretionary' in q:
+            return _safe_inr(q_row.get('PostRet: Discretionary Expenses', 0))
+        if 'monthly income' in q and 'expense' in q:
+            inc = q_row.get('PostRet: Passive+Pension Income', 0)
+            exp = q_row.get('PostRet: Living Expenses', 0)
+            return f'Income: {_safe_inr(inc)} ; Expenses: {_safe_inr(exp)}'
+        if 'financial investments apart' in q or 'apart from mutual' in q:
+            v = q_row.get('PostRet: Other Instruments')
+            if v is not None and not (isinstance(v, float) and pd.isna(v)):
+                return _safe_str(v)
+            return _safe_str(q_row.get('Other Investments Value'))
+
     # Retirement slides 5-6
     if 'monthly income' in q and 'expense' in q:
         inc = q_row.get('Ret: Monthly Income', 0)
@@ -1708,7 +1860,7 @@ def _get_answer(question_text, q_row, context=''):
     if 'year-on-year' in q or 'yoy' in q:
         return _safe_pct(q_row.get('Ret: YoY Investment Increase %'))
     if 'financial investments apart' in q or 'apart from mutual' in q:
-        return _safe_str(q_row.get('Other Investments Value'))
+        return _safe_inr(q_row.get('Other Investments Value'))
     if 'liabilities' in q and ('emi' in q or 'loan' in q):
         v = q_row.get('Ret: Liabilities Detail')
         return _safe_str(v) if not (isinstance(v, float) and pd.isna(v)) else 'None'
@@ -1803,8 +1955,17 @@ def _get_answer(question_text, q_row, context=''):
         times = []
         for i in range(1, 5):
             t = q_row.get(f'Marriage: Child {i} Timeframe')
-            if t is not None and not (isinstance(t, float) and pd.isna(t)) and str(t).strip():
-                times.append(_safe_str(t))
+            if t is None or (isinstance(t, float) and pd.isna(t)):
+                continue
+            s = _safe_str(t).strip()
+            if not s:
+                continue
+            # Normalize: bare number → "N years";  "6-8years" → "6-8 years"
+            if re.fullmatch(r'\d+', s):
+                s = f'{s} years'
+            else:
+                s = re.sub(r'(\d)\s*years?', r'\1 years', s)
+            times.append(s)
         return ' & '.join(times) if times else '-'
     if 'budget for marriage' in q or ('budget' in q and 'marriage' in q):
         budgets = []
@@ -2031,16 +2192,28 @@ def populate_questionnaire_slide(slide, q_row):
     """
     # Detect slide context by scanning all shapes (including inside groups)
     slide_context = ''
+    slide_text_lower = ''
     for shape in _iter_shapes_recursive(slide.shapes):
         if not shape.has_text_frame:
             continue
         t = shape.text_frame.text
+        slide_text_lower += ' ' + t.lower()
         if 'Vehicle Purchase' in t or ('Vehicle' in t and 'Purchase' in t):
             slide_context = 'vehicle'
             break
         if 'Home Purchase' in t or ('Home' in t and 'Purchase' in t):
             slide_context = 'home'
             break
+
+    # Post-retirement combo slide: contains both "monthly income & monthly
+    # expense" question AND "financial investments apart from mutual funds"
+    # question (and lacks the "expected change in expenses post-retirement"
+    # question that lives on the regular retirement slide).
+    is_post_ret_slide = (
+        'monthly income' in slide_text_lower
+        and 'financial investments apart' in slide_text_lower
+        and 'expected change in expenses' not in slide_text_lower
+    )
 
     for shape in slide.shapes:
         if shape.shape_type != 6:
@@ -2080,7 +2253,7 @@ def populate_questionnaire_slide(slide, q_row):
                 continue
 
         q_text = q_shape.text_frame.text.strip()
-        answer = _get_answer(q_text, q_row, context=slide_context)
+        answer = _get_answer(q_text, q_row, context=slide_context, post_ret=is_post_ret_slide)
         if answer is not None:
             q_lo = q_text.lower()
             if 'portfolio to grow' in q_lo or ('prefer' in q_lo and 'portfolio' in q_lo):
@@ -2360,6 +2533,8 @@ def do_questionnaire(prs, goals, q_row):
         print("  Questionnaire: no q_row — skipping population")
 
     # ── Step 2: Remove slides for unselected goals ────────────────────────────
+    def _norm_ap(s): return s.replace('\u2019', "'").replace('\u2018', "'")
+
     to_del = []
     for idx in q_indices:
         slide = prs.slides[idx]
@@ -2368,8 +2543,9 @@ def do_questionnaire(prs, goals, q_row):
             if shape.has_text_frame and 'Infinite Questionnaire' in shape.text_frame.text:
                 title = shape.text_frame.text.strip(); break
 
+        title_norm = _norm_ap(title)
         for kw, goal_name in GOAL_KW_SLIDES.items():
-            if kw in title and goal_name not in norm:
+            if _norm_ap(kw) in title_norm and goal_name not in norm:
                 to_del.append(idx)
                 print(f"    Remove: '{title}'")
                 break
@@ -2397,18 +2573,60 @@ def do_questionnaire(prs, goals, q_row):
                 to_del.append(idx)
                 print(f"    Remove: PG slide (PG cost is 0 or missing)")
 
-    # Remove Retirement/Goals slides if not selected
-    if 'Retirement Planning' not in norm:
+    # ── Retirement vs Post-Retirement slide selection ─────────────────────────
+    # Templates contain TWO sets of "| Goals" slides:
+    #   • Regular retirement: 2 slides w/ income/expenses, monthly investment,
+    #     YoY investment increase, expense change %, other investments, liabilities
+    #   • Post-retirement combo: 1 slide w/ just income/expenses + other investments
+    # The post-retirement combo slide is identified by having BOTH the
+    # "monthly income & monthly expense" question AND the "financial investments
+    # apart from mutual funds" question, and NOT the "expected change in expenses"
+    # question (which only lives on the regular retirement slide).
+    def _slide_is_post_ret_combo(slide):
+        text = ' '.join(
+            sh.text_frame.text.lower()
+            for sh in _iter_shapes_recursive(slide.shapes)
+            if sh.has_text_frame
+        )
+        return (
+            'monthly income' in text
+            and 'financial investments apart' in text
+            and 'expected change in expenses' not in text
+        )
+
+    def _slide_is_goals(slide):
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                t = shape.text_frame.text
+                if '| Goals' in t and 'Infinite Questionnaire' in t:
+                    return True
+        return False
+
+    is_post_ret_case = _is_post_retirement(q_row) if not q_row.empty else False
+
+    if 'Retirement Planning' not in norm and not is_post_ret_case:
+        # Client did not select any retirement-related goal — drop ALL Goals slides
+        for idx in q_indices:
+            if _slide_is_goals(prs.slides[idx]) and idx not in to_del:
+                to_del.append(idx)
+                print(f"    Remove: Retirement Goals slide")
+    elif is_post_ret_case:
+        # Post-retirement client — keep ONLY the combo slide; drop the regular
+        # retirement Goals slides.
         for idx in q_indices:
             slide = prs.slides[idx]
-            for shape in slide.shapes:
-                if shape.has_text_frame:
-                    t = shape.text_frame.text
-                    if '| Goals' in t and 'Infinite Questionnaire' in t:
-                        if idx not in to_del:
-                            to_del.append(idx)
-                            print(f"    Remove: Retirement Goals slide")
-                        break
+            if _slide_is_goals(slide) and not _slide_is_post_ret_combo(slide):
+                if idx not in to_del:
+                    to_del.append(idx)
+                    print(f"    Remove: Regular retirement Goals slide (post-retirement case)")
+    else:
+        # Regular retirement client — drop the post-retirement combo slide.
+        for idx in q_indices:
+            slide = prs.slides[idx]
+            if _slide_is_goals(slide) and _slide_is_post_ret_combo(slide):
+                if idx not in to_del:
+                    to_del.append(idx)
+                    print(f"    Remove: Post-retirement combo slide (regular retirement case)")
 
     for idx in sorted(set(to_del), reverse=True):
         delete_slide(prs, idx)
