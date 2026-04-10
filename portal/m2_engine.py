@@ -716,7 +716,33 @@ def _portfolio_risk(sm):
     if sm < 45:  return 'Aggressive'
     return 'Very Aggressive'
 
+
+def _shape_max_font_emu(shape):
+    """Return the largest font size (EMU) across a shape's runs, or 0."""
+    if not shape.has_text_frame:
+        return 0
+    mx = 0
+    for para in shape.text_frame.paragraphs:
+        for r in para.runs:
+            if r.font.size is None:
+                continue
+            try:
+                sz = int(r.font.size)
+                if sz > mx:
+                    mx = sz
+            except Exception:
+                pass
+    return mx
+
+
 def do_slide4(prs, pf, rg_agg, risk_profile):
+    """
+    Slide 4 uses text-based shape lookup (not hardcoded Google Shape IDs)
+    because every edit of the Drive template shifts shape IDs by +1. Labels
+    are identified by their keyword text + small font (sz < 200000 EMU);
+    values are the large-font shape (sz >= 200000) sitting directly below
+    each label in the same column.
+    """
     slide = prs.slides[3]
     cv   = pf['PF_CURRENT_VALUE']
     iv   = pf['INVESTED_VALUE']
@@ -728,46 +754,89 @@ def do_slide4(prs, pf, rg_agg, risk_profile):
     pf_risk = _portfolio_risk(sm)
     matches = pf_risk == risk_profile
 
-    name_val = {
-        'Google Shape;165;p19': fmt_inr_rupee(cv),
-        'Google Shape;163;p19': fmt_inr_rupee(iv),
-        'Google Shape;161;p19': f'{xirr * 100:.1f}%',
-        'Google Shape;159;p19': f'{bxir * 100:.1f}%',
-    }
+    # Classify top-level text shapes as labels (small font) vs values (large font)
+    text_shapes = [s for s in slide.shapes
+                   if s.has_text_frame and s.text_frame.text.strip()]
+    labels = [s for s in text_shapes if 90000 <= _shape_max_font_emu(s) < 200000]
+    values = [s for s in text_shapes if _shape_max_font_emu(s) >= 200000]
+
+    def _value_below(label_shape):
+        """Find the large-font shape directly below a label (same column)."""
+        best, best_dy = None, 10**12
+        lL, lT, lW = label_shape.left, label_shape.top, label_shape.width
+        for v in values:
+            if v.top <= lT:
+                continue
+            # horizontal overlap with label
+            if v.left > lL + lW or v.left + v.width < lL:
+                continue
+            dy = v.top - lT
+            if dy < best_dy and dy < 600000:   # within ~0.6M EMU ≈ 0.6 in
+                best_dy, best = dy, v
+        return best
+
+    def _find_label(*keywords):
+        for lbl in labels:
+            t = lbl.text_frame.text.strip().lower()
+            if all(k in t for k in keywords):
+                return lbl
+        return None
+
+    for name, kws, new_val in [
+        ('Current Value',   ('current', 'value'),   fmt_inr_rupee(cv)),
+        ('Invested Amount', ('invested',),          fmt_inr_rupee(iv)),
+        ('Current XIRR',    ('current', 'xirr'),    f'{xirr * 100:.1f}%'),
+        ('Benchmark XIRR',  ('benchmark', 'xirr'),  f'{bxir * 100:.1f}%'),
+    ]:
+        lbl = _find_label(*kws)
+        if lbl is None:
+            print(f"  Slide 4: WARN label {name!r} not found"); continue
+        val_sh = _value_below(lbl)
+        if val_sh is None:
+            print(f"  Slide 4: WARN value shape for {name!r} not found"); continue
+        replace_text(val_sh, new_val)
+        print(f"  Slide 4: {name} -> {new_val}")
+
+    # Portfolio risk — find "Portfolio Risk" label, write risk below it
+    risk_lbl = (_find_label('portfolio', 'risk')
+                or _find_label('risk', 'profile')
+                or _find_label('risk'))
+    if risk_lbl is not None:
+        risk_val_sh = _value_below(risk_lbl)
+        if risk_val_sh is not None:
+            replace_text(risk_val_sh, pf_risk)
+            print(f"  Slide 4: portfolio risk (S+M={sm:.0f}%) -> '{pf_risk}'")
+
+    # Gains + S+M + match/no-match — match by existing text content
+    match_text   = "Matches your risk profile"
+    nomatch_text = "Doesn't match your risk profile"
+    match_color   = RGBColor(0x2A, 0x9C, 0x4A)   # green
+    nomatch_color = RGBColor(0xCC, 0x00, 0x00)   # red
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
         txt = shape.text_frame.text.strip()
-        if shape.name in name_val:
-            replace_text(shape, name_val[shape.name])
-            print(f"  Slide 4: {shape.name.split(';')[1]} -> {name_val[shape.name]}")
-        elif 'Portfolio gains' in txt:
+        tl  = txt.lower()
+        if 'portfolio gains' in tl:
             replace_text(shape, f'Portfolio gains: {fmt_inr_rupee(pg)}')
             print(f"  Slide 4: PF gains -> {fmt_inr_rupee(pg)}")
-        elif 'Benchmark gains' in txt:
+        elif 'benchmark gains' in tl:
             replace_text(shape, f'Benchmark gains: {fmt_inr_rupee(bg)}')
             print(f"  Slide 4: BM gains -> {fmt_inr_rupee(bg)}")
-        elif 'Small' in txt and 'Mid' in txt:
+        elif 'small' in tl and 'mid' in tl and 'allocation' in tl:
             replace_text(shape, f'Small + Mid Allocation: {sm:.0f}%')
             print(f"  Slide 4: S+M -> {sm:.0f}%")
-        elif shape.name == 'Google Shape;157;p19':
-            replace_text(shape, pf_risk)
-            print(f"  Slide 4: portfolio risk (S+M={sm:.0f}%) -> '{pf_risk}'")
-        elif shape.name == 'Google Shape;195;p19':
-            # Shape has green+red runs baked in — pick the right one
-            tf = shape.text_frame
-            match_text   = "Matches your risk profile"
-            nomatch_text = "Doesn't match your risk profile"
-            match_color   = RGBColor(0x2A, 0x9C, 0x4A)   # green
-            nomatch_color = RGBColor(0xCC, 0x00, 0x00)    # red
+        elif 'match' in tl and 'risk profile' in tl:
             new_text  = match_text if matches else nomatch_text
             new_color = match_color if matches else nomatch_color
-            for para in tf.paragraphs:
+            replace_text(shape, new_text)
+            for para in shape.text_frame.paragraphs:
                 for run in para.runs:
-                    run.text       = new_text
-                    run.font.color.rgb = new_color
-                    new_text = ''   # only first run carries text; rest cleared
-            print(f"  Slide 4: match/no-match -> '{(match_text if matches else nomatch_text)}' "
+                    try:
+                        run.font.color.rgb = new_color
+                    except Exception:
+                        pass
+            print(f"  Slide 4: match/no-match -> '{new_text}' "
                   f"(pf_risk='{pf_risk}', q_risk='{risk_profile}')")
 
     _make_pie(slide, rg_agg)
@@ -839,11 +908,15 @@ def _make_pie(slide, rg):
     plt.close(fig)
     buf.seek(0)
 
-    # ── Locate shape ;155 (centre text — keep it, just get the element) ──────
+    # ── Locate the centre-text shape by content ("Portfolio / Allocation") ──
     shape_155_el = None
     for shape in slide.shapes:
-        if ';155;' in shape.name:
+        if not shape.has_text_frame:
+            continue
+        tl = shape.text_frame.text.strip().lower()
+        if 'allocation' in tl and 'portfolio' in tl and len(tl) < 40:
             shape_155_el = shape._element
+            break
 
     # ── Remove old pie-chart image (large, height > 1 M EMU) ─────────────────
     for shape in list(slide.shapes):
@@ -866,13 +939,13 @@ def _make_pie(slide, rg):
         Emu(PIE_IMG_WIDTH), Emu(PIE_IMG_HEIGHT),
     )
 
-    # Move new picture behind shape ;155 so the centre text stays on top
+    # Move new picture behind centre-text shape so the centre text stays on top
     if shape_155_el is not None:
         sp_tree = slide.shapes._spTree
         new_el  = new_pic._element
         sp_tree.remove(new_el)
         shape_155_el.addprevious(new_el)
-        print("  Slide 4: donut placed behind shape ;155")
+        print("  Slide 4: donut placed behind centre text")
 
     # ── Update existing legend group text ─────────────────────────────────────
     _update_legend_groups(slide, parts, eq_total)
@@ -882,29 +955,38 @@ def _make_pie(slide, rg):
 def _update_legend_groups(slide, parts, eq_total):
     """
     Update percentage (and optionally label) text in the existing base-deck
-    legend groups.  Shape-name pairs from base deck:
-      ;177/;178  Conservative label/pct
-      ;179/;180  Balanced      label/pct
-      ;181/;182  Aggressive    label/pct
-      ;183/;184  Equity total  label/pct
-      ;188/;189  Hybrid        label/pct  (also used as template for extra categories)
+    legend groups. Labels are matched by TEXT CONTENT (Conservative / Balanced
+    / Aggressive / Equity / Hybrid) rather than hardcoded Google Shape IDs, so
+    the code survives the shape-ID reshuffling that Drive performs on every
+    edit of the template. Each label is paired with its nearest % sibling in
+    the same group (closest `top` coordinate).
     Extra non-equity categories (Debt, Gold & Silver, etc.) get cloned rows.
     """
     pct_map = {lb: pc for lb, pc, _ in parts}
     col_map = {lb: col for lb, _, col in parts}
 
-    LEGEND_MAP = {
-        ';177;': ('Conservative', False),
-        ';178;': ('Conservative', True),
-        ';179;': ('Balanced',     False),
-        ';180;': ('Balanced',     True),
-        ';181;': ('Aggressive',   False),
-        ';182;': ('Aggressive',   True),
-        ';183;': ('Equity',       False),
-        ';184;': ('Equity',       True),
-        ';188;': ('Hybrid',       False),
-        ';189;': ('Hybrid',       True),
-    }
+    KNOWN_LABELS = {'Conservative', 'Balanced', 'Aggressive', 'Equity', 'Hybrid'}
+
+    def _set_pct(pct_sh, cat):
+        val = eq_total if cat == 'Equity' else pct_map.get(cat, 0)
+        if val <= 0:
+            new_text = ''
+        elif val < 1:
+            new_text = '<1%'
+        else:
+            new_text = f'{val:.0f}%'
+        para = pct_sh.text_frame.paragraphs[0]
+        if para.runs:
+            para.runs[0].text = new_text
+            for r in para.runs[1:]:
+                r.text = ''
+        else:
+            para.text = new_text
+
+    def _hide_label(lbl_sh):
+        para = lbl_sh.text_frame.paragraphs[0]
+        if para.runs:
+            para.runs[0].text = ''
 
     for shape in slide.shapes:
         if shape.shape_type != 6:
@@ -914,37 +996,36 @@ def _update_legend_groups(slide, parts, eq_total):
         except Exception:
             continue
 
+        # Identify label shapes by exact text match and % shapes by '%' presence
+        label_children = []   # list of (cat, shape)
+        pct_children   = []
         for ch in children:
-            for key, (cat, is_pct) in LEGEND_MAP.items():
-                if key not in ch.name:
-                    continue
-                if not ch.has_text_frame:
-                    break
-                if is_pct:
-                    val = eq_total if cat == 'Equity' else pct_map.get(cat, 0)
-                    if val <= 0:
-                        new_text = ''
-                    elif val < 1:
-                        new_text = '<1%'
-                    else:
-                        new_text = f'{val:.0f}%'
-                    para = ch.text_frame.paragraphs[0]
-                    if para.runs:
-                        para.runs[0].text = new_text
-                        for r in para.runs[1:]:
-                            r.text = ''
-                    else:
-                        para.text = new_text
-                else:
-                    # Hide label if category absent for this customer
-                    if cat != 'Equity' and pct_map.get(cat, 0) == 0:
-                        para = ch.text_frame.paragraphs[0]
-                        if para.runs:
-                            para.runs[0].text = ''
-                break
+            if not ch.has_text_frame:
+                continue
+            t = ch.text_frame.text.strip()
+            if t in KNOWN_LABELS:
+                label_children.append((t, ch))
+            elif '%' in t:
+                pct_children.append(ch)
 
-    # ── Clone Hybrid group for extra non-equity categories ───────────────────
-    # e.g. Debt Like, Gold & Silver, Solution, Global — these have no static slot
+        # Pair each label with its closest (same-row) % sibling
+        used = set()
+        for cat, lbl_sh in label_children:
+            best, best_dt = None, 1 << 30
+            for ps in pct_children:
+                if id(ps) in used:
+                    continue
+                dt = abs(ps.top - lbl_sh.top)
+                if dt < best_dt:
+                    best_dt, best = dt, ps
+            if best is None:
+                continue
+            used.add(id(best))
+            _set_pct(best, cat)
+            if cat != 'Equity' and pct_map.get(cat, 0) == 0:
+                _hide_label(lbl_sh)
+
+    # ── Clone the "Hybrid" group for extra non-equity categories ─────────────
     eq_labels = {'Aggressive', 'Balanced', 'Conservative'}
     extra_cats = [(lb, pc, col_map.get(lb, '#808080'))
                   for lb, pc, _ in parts
@@ -952,11 +1033,19 @@ def _update_legend_groups(slide, parts, eq_total):
     if not extra_cats:
         return
 
-    # Find the Hybrid group element (template for cloning)
+    # Find the Hybrid group: a GROUP that contains a child whose text == "Hybrid"
     hybrid_grp = None
     for shape in slide.shapes:
-        if ';185;' in shape.name:
-            hybrid_grp = shape
+        if shape.shape_type != 6:
+            continue
+        try:
+            for ch in shape.shapes:
+                if ch.has_text_frame and ch.text_frame.text.strip() == 'Hybrid':
+                    hybrid_grp = shape
+                    break
+        except Exception:
+            continue
+        if hybrid_grp is not None:
             break
     if hybrid_grp is None:
         return
@@ -1456,33 +1545,40 @@ def do_slide6(prs, pf, risk_profile):
         use_competitive = False
         diff = 0.0
 
+    # Template text markers — match by content, not by hardcoded shape IDs.
+    # Box 01: heading "Consistent investing discipline" (left unchanged),
+    #         body starts with "SIPs & lump sum".
+    # Box 02: heading is one of three variants (Solid Absolute Gains / etc.);
+    #         body starts with "Solid absolute gains of" or one of the variant
+    #         body prefixes.
+    box01_body = f'SIPs & lump sum over {years_int} years building a corpus of {cv_str}'
+    if use_competitive:
+        box02_heading = 'Delivering competitive returns'
+        box02_body    = (f"Portfolio performance has edged past benchmark "
+                         f"by {diff:.1f}%, you're on the right track")
+    else:
+        box02_heading = 'Aligned to your risk profile'
+        box02_body    = f'Your portfolio reflects your preferred risk level: {risk_profile}*'
+
+    BOX02_HEADINGS = {
+        'Solid Absolute Gains',
+        'Delivering competitive returns',
+        'Aligned to your risk profile',
+    }
+
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
-        name = shape.name
-
-        if name == 'Google Shape;220;p21':
-            # Box 01 description — has 8 runs; run[2]=years, run[6]=corpus value
-            runs = shape.text_frame.paragraphs[0].runs
-            if len(runs) >= 7:
-                runs[2].text = str(years_int)
-                runs[6].text = cv_str
-            else:
-                replace_text(shape, f'SIPs & lump sum over {years_int} years building a corpus of {cv_str}')
-
-        elif name == 'Google Shape;216;p21':
-            # Box 02 title
-            if use_competitive:
-                replace_text(shape, 'Delivering competitive returns')
-            else:
-                replace_text(shape, 'Aligned to your risk profile')
-
-        elif name == 'Google Shape;217;p21':
-            # Box 02 description
-            if use_competitive:
-                replace_text(shape, f"Portfolio performance has edged past benchmark by {diff:.1f}%, you're on the right track")
-            else:
-                replace_text(shape, f'Your portfolio reflects your preferred risk level: {risk_profile}*')
+        txt = shape.text_frame.text.strip()
+        tl  = txt.lower()
+        if 'sips' in tl and 'lump sum' in tl:
+            replace_text(shape, box01_body)
+        elif txt in BOX02_HEADINGS:
+            replace_text(shape, box02_heading)
+        elif ('solid absolute gains of' in tl
+              or 'portfolio performance has edged' in tl
+              or 'portfolio reflects your preferred' in tl):
+            replace_text(shape, box02_body)
 
     variant = 'Delivering competitive returns' if use_competitive else 'Aligned to your risk profile'
     print(f"  Slide 6: {years_int}y, {cv_str}, variant='{variant}'")
@@ -1598,11 +1694,19 @@ def do_slide13(prs, pf_id, risk_profile, data):
     plt.close(fig)
     buf13.seek(0)
 
-    # ── Replace slide 13 chart image (;338) ───────────────────────────────────
+    # ── Remove the old chart PICTURE (find by size/position, not shape ID) ──
     for shape in list(slide.shapes):
-        if ';338;' in shape.name:
-            remove_shape(slide, shape)
-            break
+        if (shape.shape_type == 13
+                and shape.width  > 3_000_000
+                and shape.height > 2_000_000
+                and shape.top    > 1_000_000):
+            try:
+                _ = shape.image
+                remove_shape(slide, shape)
+                print("  Slide 13: removed old chart image")
+                break
+            except Exception:
+                pass
 
     new_pic = slide.shapes.add_picture(
         buf13,
@@ -1615,22 +1719,40 @@ def do_slide13(prs, pf_id, risk_profile, data):
     sp_tree.remove(new_el)
     sp_tree.insert(2, new_el)
 
-    # ── Update text shapes ─────────────────────────────────────────────────────
+    # ── Update text shapes by content-matching (resilient to shape-ID drift) ─
+    import re as _re
+    final_val_pat = _re.compile(r'^[₹]?\s*[\d.]+\s*L\s*$', _re.IGNORECASE)
+
+    # Final-value labels (e.g. "41.5L", "49.7L"): sorted top→bottom,
+    # upper = Infinite, lower = Actual.
+    final_shapes = []
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
-        if ';329;' in shape.name:
-            replace_text(shape, f'Infinite {risk_profile}')
-        elif ';334;' in shape.name:
-            # Actual final value (lower position)
-            replace_text(shape, fmt_inr_rupee(pf_final).replace('₹', ''))
-        elif ';335;' in shape.name:
-            # Infinite final value (higher position)
-            replace_text(shape, fmt_inr_rupee(inf_final).replace('₹', ''))
+        t = shape.text_frame.text.strip()
+        if final_val_pat.match(t):
+            final_shapes.append(shape)
+    final_shapes.sort(key=lambda s: s.top)
+    if len(final_shapes) >= 2:
+        replace_text(final_shapes[0], fmt_inr_rupee(inf_final).replace('₹', ''))
+        replace_text(final_shapes[1], fmt_inr_rupee(pf_final).replace('₹', ''))
+    elif len(final_shapes) == 1:
+        replace_text(final_shapes[0], fmt_inr_rupee(inf_final).replace('₹', ''))
 
-    # ── Update XIRR table (;327): row[1] col[1]=Infinite, col[2]=Actual ───────
+    # Infinite label — starts with "Infinite" and contains a risk-profile word
+    risk_words = ('Very Aggressive', 'Very Conservative',
+                  'Aggressive', 'Conservative', 'Balanced')
     for shape in slide.shapes:
-        if ';327;' in shape.name and shape.has_table:
+        if not shape.has_text_frame:
+            continue
+        t = shape.text_frame.text.strip()
+        if t.startswith('Infinite') and any(w in t for w in risk_words):
+            replace_text(shape, f'Infinite {risk_profile}')
+            break
+
+    # ── XIRR table: find the single TABLE on the slide ──────────────────────
+    for shape in slide.shapes:
+        if shape.has_table:
             tbl = shape.table
             set_table_cell(tbl.cell(1, 1), f'{inf_xirr * 100:.2f}%')
             set_table_cell(tbl.cell(1, 2), f'{pf_xirr * 100:.2f}%')
