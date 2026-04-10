@@ -1874,16 +1874,26 @@ def _get_answer(question_text, q_row, context=''):
         return _safe_inr(v)
 
     # Children's Education
+    def _slot_has_value(v):
+        """True when a per-child column actually contains data.
+        Treats None / NaN / empty string / lone dash as unpopulated.
+        Needed because Google Sheets returns '' for blank cells, which
+        would otherwise be counted as populated."""
+        if v is None:
+            return False
+        if isinstance(v, float) and pd.isna(v):
+            return False
+        s = str(v).strip()
+        return bool(s) and s != '-'
+
     if 'number of children' in q and 'education' in q:
         count = sum(1 for i in range(1, 5)
-                    if not (isinstance(q_row.get(f'Edu: Child {i} UG Year', float('nan')), float)
-                            and pd.isna(q_row.get(f'Edu: Child {i} UG Year', float('nan')))))
+                    if _slot_has_value(q_row.get(f'Edu: Child {i} UG Year')))
         return str(max(count, 1))
     if 'undergraduate' in q and 'start year' in q:
         years = [_safe_str(q_row.get(f'Edu: Child {i} UG Year'))
                  for i in range(1, 5)
-                 if not (isinstance(q_row.get(f'Edu: Child {i} UG Year'), float)
-                         and pd.isna(q_row.get(f'Edu: Child {i} UG Year')))]
+                 if _slot_has_value(q_row.get(f'Edu: Child {i} UG Year'))]
         return ' & '.join(years) if years else '-'
     if 'cost' in q and 'undergraduate' in q:
         costs = []
@@ -1899,8 +1909,7 @@ def _get_answer(question_text, q_row, context=''):
     if 'postgraduate' in q and 'start year' in q:
         years = [_safe_str(q_row.get(f'Edu: Child {i} PG Year'))
                  for i in range(1, 5)
-                 if not (isinstance(q_row.get(f'Edu: Child {i} PG Year'), float)
-                         and pd.isna(q_row.get(f'Edu: Child {i} PG Year')))]
+                 if _slot_has_value(q_row.get(f'Edu: Child {i} PG Year'))]
         return ' & '.join(years) if years else '-'
     if 'cost' in q and 'postgraduate' in q:
         costs = []
@@ -1929,10 +1938,11 @@ def _get_answer(question_text, q_row, context=''):
         times = []
         for i in range(1, 5):
             t = q_row.get(f'Marriage: Child {i} Timeframe')
+            # Treat None / NaN / empty string / lone dash as "no child in this slot"
             if t is None or (isinstance(t, float) and pd.isna(t)):
                 continue
-            s = _safe_str(t).strip()
-            if not s:
+            s = str(t).strip()
+            if not s or s == '-':
                 continue
             # Normalize: bare number → "N years";  "6-8years" → "6-8 years"
             if re.fullmatch(r'\d+', s):

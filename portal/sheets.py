@@ -32,12 +32,34 @@ Auto-pruning (Lines + Invested_Value_Line):
 
 import pandas as pd
 import numpy as np
+import time
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from typing import Optional
 
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 from google_auth import get_sheets_service, get_drive_service
+
+
+def _execute_with_retry(request, max_attempts: int = 5, base_delay: float = 1.0):
+    """Execute a Google API request with exponential backoff on transient errors.
+    Retries on 409 (concurrent modification), 429 (rate limit), 5xx (server).
+    """
+    for attempt in range(max_attempts):
+        try:
+            return request.execute()
+        except HttpError as e:
+            status = getattr(e.resp, 'status', None)
+            try:
+                status = int(status) if status is not None else None
+            except (TypeError, ValueError):
+                status = None
+            retryable = status in (409, 429, 500, 502, 503, 504)
+            if not retryable or attempt == max_attempts - 1:
+                raise
+            delay = base_delay * (2 ** attempt)
+            time.sleep(delay)
 from config import (
     MAIN_SPREADSHEET_ID, M3_SPREADSHEET_ID,
     QUESTIONNAIRE_SPREADSHEET_ID, TIMESERIES_SPREADSHEET_ID,
@@ -475,7 +497,9 @@ def _delete_rows_for_pf_ids(spreadsheet_id: str, tab: str, pf_ids_to_remove: set
 
 
 def _append_rows(spreadsheet_id: str, tab: str, df: pd.DataFrame) -> int:
-    """Append rows to the bottom of a sheet (no header write). Returns rows appended."""
+    """Append rows to the bottom of a sheet (no header write). Returns rows appended.
+    Uses _execute_with_retry because immediately after _delete_rows_for_pf_ids the
+    Sheets backend can return 409 "operation aborted" while it reindexes."""
     if df.empty:
         return 0
 
@@ -487,13 +511,14 @@ def _append_rows(spreadsheet_id: str, tab: str, df: pd.DataFrame) -> int:
     appended = 0
     for i in range(0, len(values), BATCH):
         chunk = values[i:i + BATCH]
-        svc.spreadsheets().values().append(
+        req = svc.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
             range=tab,
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": chunk},
-        ).execute()
+        )
+        _execute_with_retry(req)
         appended += len(chunk)
 
     return appended
