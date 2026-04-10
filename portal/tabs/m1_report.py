@@ -37,8 +37,12 @@ for _canonical in _TAB_UPSERT_MAP:
     _TAB_ALIASES[_canonical.lower().replace('_', ' ')] = _canonical
 
 
-def _sync_upload_to_sheets(uploaded_file) -> list[str]:
-    """Parse uploaded Excel and upsert each recognised tab into Google Sheets."""
+def _sync_upload_to_sheets(uploaded_file, only_pf_id: str | None = None) -> list[str]:
+    """Parse uploaded Excel and upsert each recognised tab into Google Sheets.
+    Filters large per-client tabs (Lines, Invested_Value_Line) to only the
+    selected PF_ID — critical for memory on Streamlit Cloud.
+    """
+    import gc
     synced = []
     try:
         xls = pd.ExcelFile(uploaded_file)
@@ -54,7 +58,13 @@ def _sync_upload_to_sheets(uploaded_file) -> list[str]:
             pass
         return synced
 
-    for sheet_name in xls.sheet_names:
+    LARGE_PER_CLIENT_TABS = {'Lines', 'Invested_Value_Line'}
+    sheet_order = sorted(
+        xls.sheet_names,
+        key=lambda s: 1 if _TAB_ALIASES.get(s.strip().lower()) in LARGE_PER_CLIENT_TABS else 0,
+    )
+
+    for sheet_name in sheet_order:
         canonical = _TAB_ALIASES.get(sheet_name.strip().lower())
         if not canonical:
             continue
@@ -64,7 +74,10 @@ def _sync_upload_to_sheets(uploaded_file) -> list[str]:
             df.columns = [c.lstrip('\ufeff').strip() for c in df.columns]
             if df.empty:
                 continue
-            # Convert Timestamp/datetime columns to strings for JSON serialization
+            if canonical in LARGE_PER_CLIENT_TABS and only_pf_id and 'PF_ID' in df.columns:
+                df = df[df['PF_ID'].astype(str) == str(only_pf_id)].copy()
+                if df.empty:
+                    continue
             for col in df.columns:
                 if pd.api.types.is_datetime64_any_dtype(df[col]):
                     df[col] = df[col].dt.strftime('%Y-%m-%d').fillna('')
@@ -72,6 +85,12 @@ def _sync_upload_to_sheets(uploaded_file) -> list[str]:
             synced.append(canonical)
         except Exception as e:
             st.warning(f"Could not sync tab '{sheet_name}': {e}")
+        finally:
+            try:
+                del df
+            except Exception:
+                pass
+            gc.collect()
 
     uploaded_file.seek(0)
     return synced
@@ -337,7 +356,7 @@ def render():
             with st.spinner("Syncing uploaded data to Google Sheets..."):
                 try:
                     uploaded.seek(0)
-                    synced = _sync_upload_to_sheets(uploaded)
+                    synced = _sync_upload_to_sheets(uploaded, only_pf_id=selected_pf_id)
                     if synced:
                         st.success(f"Synced {len(synced)} tabs: {', '.join(synced)}")
                 except Exception as e:
