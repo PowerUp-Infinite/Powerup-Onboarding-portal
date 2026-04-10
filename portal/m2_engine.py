@@ -1,8 +1,12 @@
 """
-m2_engine.py — PowerUp Infinite Strategy Deck Generator.
+m2_engine.py - PowerUp Infinite Strategy Deck Generator.
 
-Ported from M2/app.py to read data from Google Sheets
-and output PPTX as BytesIO (uploaded to Drive by caller).
+Port of M2/app.py - logic is byte-for-byte identical to the local automation.
+The only differences are:
+  * Data loaded from Google Sheets via the `sheets` module
+  * Base deck / Risk-Reward deck / Categorization / rating images downloaded
+    from Google Drive (cached in a tempdir for the session)
+  * generate_deck() returns (BytesIO, filename) instead of saving to disk
 """
 
 import os
@@ -34,9 +38,9 @@ from lxml import etree
 
 import sheets
 
-# ──────────────────────────────────────────────────────────────
-# CONFIGURATION — all assets downloaded from Google Drive
-# ──────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------
+# CONFIGURATION - all assets downloaded from Google Drive
+# ----------------------------------------------------------------
 
 import tempfile
 from config import (
@@ -49,12 +53,10 @@ from config import (
 # Temporary directory for cached Drive downloads (persists across calls within one session)
 _CACHE_DIR = tempfile.mkdtemp(prefix='m2_assets_')
 
-def _download_drive_file(file_id: str, filename: str, export_mime: str | None = None) -> str:
-    """
-    Download a file from Google Drive into _CACHE_DIR. Returns local path.
-    Uses export_mime for Google Workspace files (Slides→PPTX), direct download for binary files.
-    Caches: only downloads once per session.
-    """
+def _download_drive_file(file_id, filename, export_mime=None):
+    """Download a file from Google Drive into _CACHE_DIR. Returns local path.
+    Uses export_mime for Google Workspace files (Slides->PPTX), direct download for binary files.
+    Caches: only downloads once per session."""
     local_path = os.path.join(_CACHE_DIR, filename)
     if os.path.exists(local_path):
         return local_path
@@ -79,35 +81,33 @@ def _download_drive_file(file_id: str, filename: str, export_mime: str | None = 
     return local_path
 
 
-def _get_base_deck_path() -> str:
-    """Download M2 Base Deck from Drive (Google Slides → PPTX)."""
+def _get_base_deck_path():
+    """Download M2 Base Deck from Drive (Google Slides -> PPTX)."""
     return _download_drive_file(
         M2_TEMPLATE_ID, 'Base_Deck.pptx',
         export_mime='application/vnd.openxmlformats-officedocument.presentationml.presentation',
     )
 
-def _get_rr_deck_path() -> str:
-    """Download Risk Reward Slides from Drive (Google Slides → PPTX)."""
+def _get_rr_deck_path():
+    """Download Risk Reward Slides from Drive (Google Slides -> PPTX)."""
     return _download_drive_file(
         M2_RISK_REWARD_TEMPLATE_ID, 'Risk_Reward.pptx',
         export_mime='application/vnd.openxmlformats-officedocument.presentationml.presentation',
     )
 
-def _get_categorization_path() -> str:
+def _get_categorization_path():
     """Download Scheme Categorization Excel from Drive."""
     return _download_drive_file(
         M2_CATEGORIZATION_FILE_ID, 'Scheme_Category_Catgorization.xlsx',
     )
 
-RATING_IMAGES = {'IN_FORM', 'ON_TRACK', 'OUT_OF_FORM', 'OFF_TRACK'}
-
-def _get_rating_image(key: str) -> str:
-    """Download a rating image from Drive. key: IN_FORM, ON_TRACK, etc."""
+def _get_rating_image(key):
+    """Download a rating image from Drive. key: IN_FORM / ON_TRACK / OUT_OF_FORM / OFF_TRACK."""
     file_map = {
-        'IN_FORM':     (M2_IMG_INFORM_ID, 'InForm.png'),
-        'ON_TRACK':    (M2_IMG_ONTRACK_ID, 'OnTrack.png'),
+        'IN_FORM':     (M2_IMG_INFORM_ID,    'InForm.png'),
+        'ON_TRACK':    (M2_IMG_ONTRACK_ID,   'OnTrack.png'),
         'OUT_OF_FORM': (M2_IMG_OUTOFFORM_ID, 'OutofForm.png'),
-        'OFF_TRACK':   (M2_IMG_OFFTRACK_ID, 'OffTrack.png'),
+        'OFF_TRACK':   (M2_IMG_OFFTRACK_ID,  'OffTrack.png'),
     }
     fid, fname = file_map[key]
     return _download_drive_file(fid, fname)
@@ -182,20 +182,24 @@ def load_data():
     data['results']        = sheets.read_results()
     data['invested']       = sheets.read_invested_value_line()
     # Convert numeric columns that come back as strings from Sheets API
+    _text_cols = {
+        'PF_ID', 'ISIN', 'NAME', 'FUND_NAME', 'FUND_STANDARD_NAME',
+        'FUND_LEGAL_NAME', 'TYPE', 'POWERRATING', 'DISTRIBUTION_STATUS',
+        'RISK_GROUP_L0', 'UPDATED_SUBCATEGORY', 'UPDATED_BROAD_CATEGORY_GROUP',
+        'BROAD_CATEGORY_GROUP', 'DERIVED_CATEGORY', 'Purchase Mode',
+        'BM', 'DIR_ISIN', 'ALT_ISIN_J', 'DATE',
+    }
     for key in ('pf_level', 'riskgroup', 'scheme', 'results', 'lines', 'invested'):
         df = data[key]
         for col in df.columns:
-            if col in ('PF_ID', 'ISIN', 'NAME', 'FUND_NAME', 'FUND_STANDARD_NAME',
-                        'FUND_LEGAL_NAME', 'TYPE', 'POWERRATING', 'DISTRIBUTION_STATUS',
-                        'RISK_GROUP_L0', 'UPDATED_SUBCATEGORY', 'UPDATED_BROAD_CATEGORY_GROUP',
-                        'BROAD_CATEGORY_GROUP', 'DERIVED_CATEGORY', 'Purchase Mode',
-                        'BM', 'DIR_ISIN', 'ALT_ISIN_J', 'DATE'):
+            if col in _text_cols:
                 continue
             df[col] = pd.to_numeric(df[col], errors='coerce')
         data[key] = df
     for name, df in data.items():
         print(f"  Loaded {name}: {len(df)} rows, cols={list(df.columns)[:6]}...")
     return data
+
 
 # ──────────────────────────────────────────────────────────────
 # FORMATTING HELPERS
@@ -263,17 +267,6 @@ def _safe_inr(val):
     except (ValueError, TypeError):
         s = str(val).strip()
         return s if s else '-'
-
-def _is_blank(val) -> bool:
-    """Check if a value is blank/empty/NaN (handles Google Sheets empty strings)."""
-    if val is None:
-        return True
-    try:
-        if pd.isna(val):
-            return True
-    except (TypeError, ValueError):
-        pass
-    return str(val).strip() in ('', 'nan', '-')
 
 def _safe_pct(val):
     """Format as percentage. NaN -> '-'. Handles decimals (0.05 -> 5%)."""
@@ -717,23 +710,6 @@ def _portfolio_risk(sm):
     if sm < 45:  return 'Aggressive'
     return 'Very Aggressive'
 
-def _max_font_emu(shape):
-    """Return the largest font size (in EMU) across all runs, or 0."""
-    if not shape.has_text_frame:
-        return 0
-    mx = 0
-    for para in shape.text_frame.paragraphs:
-        for r in para.runs:
-            if r.font.size is not None:
-                try:
-                    sz = int(r.font.size)
-                    if sz > mx:
-                        mx = sz
-                except Exception:
-                    pass
-    return mx
-
-
 def do_slide4(prs, pf, rg_agg, risk_profile):
     slide = prs.slides[3]
     cv   = pf['PF_CURRENT_VALUE']
@@ -746,103 +722,46 @@ def do_slide4(prs, pf, rg_agg, risk_profile):
     pf_risk = _portfolio_risk(sm)
     matches = pf_risk == risk_profile
 
-    # ── Classify top-level text shapes as labels or values by font size ──
-    # Labels are small (≈133350 EMU / 10.5pt), values are big (≈254000 EMU / 20pt)
-    text_shapes = [s for s in slide.shapes if s.has_text_frame]
-    labels = []
-    values = []
-    for s in text_shapes:
-        sz = _max_font_emu(s)
-        txt = s.text_frame.text.strip()
-        if not txt:
-            continue
-        if sz >= 200000:
-            values.append(s)
-        elif 90000 <= sz < 200000:
-            labels.append(s)
-
-    def _value_below(label):
-        """Find nearest large-font shape directly below this label."""
-        if label is None:
-            return None
-        lL, lT, lW = label.left, label.top, label.width
-        best, best_dy = None, 1 << 30
-        for v in values:
-            if v.top <= lT:
-                continue
-            # Horizontal overlap
-            if v.left > lL + lW or v.left + v.width < lL:
-                continue
-            dy = v.top - lT
-            if dy < best_dy and dy < 600000:   # within ~0.6M EMU ≈ 0.6 inch
-                best_dy, best = dy, v
-        return best
-
-    def _label_by_keywords(*keywords):
-        """Find label shape whose lowered text contains ALL the given keywords."""
-        for lbl in labels:
-            txt = lbl.text_frame.text.strip().lower()
-            if all(k in txt for k in keywords):
-                return lbl
-        return None
-
-    # Metric → (label keywords, formatted value)
-    metrics = [
-        ('Current Value',   _label_by_keywords('current', 'value'),  fmt_inr_rupee(cv)),
-        ('Invested Amount', _label_by_keywords('invested'),          fmt_inr_rupee(iv)),
-        ('Current XIRR',    _label_by_keywords('current', 'xirr'),   f'{xirr * 100:.1f}%'),
-        ('Benchmark XIRR',  _label_by_keywords('benchmark', 'xirr'), f'{bxir * 100:.1f}%'),
-    ]
-    for name, lbl, new_val in metrics:
-        if lbl is None:
-            print(f"  Slide 4: WARN label not found for {name!r}")
-            continue
-        val_sh = _value_below(lbl)
-        if val_sh is None:
-            print(f"  Slide 4: WARN value shape not found for {name!r}")
-            continue
-        replace_text(val_sh, new_val)
-        print(f"  Slide 4: {name} -> {new_val}")
-
-    # Portfolio risk: label contains 'risk'
-    risk_lbl = _label_by_keywords('portfolio', 'risk') or _label_by_keywords('risk', 'profile') or _label_by_keywords('risk')
-    risk_val_sh = _value_below(risk_lbl)
-    if risk_val_sh is not None:
-        replace_text(risk_val_sh, pf_risk)
-        print(f"  Slide 4: portfolio risk (S+M={sm:.0f}%) -> '{pf_risk}'")
-    else:
-        print(f"  Slide 4: WARN could not find risk value shape")
-
-    # Match/no-match + gains + S+M — match by text content
-    match_text   = "Matches your risk profile"
-    nomatch_text = "Doesn't match your risk profile"
-    match_color   = RGBColor(0x2A, 0x9C, 0x4A)   # green
-    nomatch_color = RGBColor(0xCC, 0x00, 0x00)   # red
+    name_val = {
+        'Google Shape;165;p19': fmt_inr_rupee(cv),
+        'Google Shape;163;p19': fmt_inr_rupee(iv),
+        'Google Shape;161;p19': f'{xirr * 100:.1f}%',
+        'Google Shape;159;p19': f'{bxir * 100:.1f}%',
+    }
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
         txt = shape.text_frame.text.strip()
-        tl  = txt.lower()
-        if 'portfolio gains' in tl:
+        if shape.name in name_val:
+            replace_text(shape, name_val[shape.name])
+            print(f"  Slide 4: {shape.name.split(';')[1]} -> {name_val[shape.name]}")
+        elif 'Portfolio gains' in txt:
             replace_text(shape, f'Portfolio gains: {fmt_inr_rupee(pg)}')
             print(f"  Slide 4: PF gains -> {fmt_inr_rupee(pg)}")
-        elif 'benchmark gains' in tl:
+        elif 'Benchmark gains' in txt:
             replace_text(shape, f'Benchmark gains: {fmt_inr_rupee(bg)}')
             print(f"  Slide 4: BM gains -> {fmt_inr_rupee(bg)}")
-        elif 'small' in tl and 'mid' in tl and 'allocation' in tl:
+        elif 'Small' in txt and 'Mid' in txt:
             replace_text(shape, f'Small + Mid Allocation: {sm:.0f}%')
             print(f"  Slide 4: S+M -> {sm:.0f}%")
-        elif 'match' in tl and 'risk profile' in tl:
+        elif shape.name == 'Google Shape;157;p19':
+            replace_text(shape, pf_risk)
+            print(f"  Slide 4: portfolio risk (S+M={sm:.0f}%) -> '{pf_risk}'")
+        elif shape.name == 'Google Shape;195;p19':
+            # Shape has green+red runs baked in — pick the right one
+            tf = shape.text_frame
+            match_text   = "Matches your risk profile"
+            nomatch_text = "Doesn't match your risk profile"
+            match_color   = RGBColor(0x2A, 0x9C, 0x4A)   # green
+            nomatch_color = RGBColor(0xCC, 0x00, 0x00)    # red
             new_text  = match_text if matches else nomatch_text
             new_color = match_color if matches else nomatch_color
-            replace_text(shape, new_text)
-            for para in shape.text_frame.paragraphs:
+            for para in tf.paragraphs:
                 for run in para.runs:
-                    try:
-                        run.font.color.rgb = new_color
-                    except Exception:
-                        pass
-            print(f"  Slide 4: match/no-match -> '{new_text}' "
+                    run.text       = new_text
+                    run.font.color.rgb = new_color
+                    new_text = ''   # only first run carries text; rest cleared
+            print(f"  Slide 4: match/no-match -> '{(match_text if matches else nomatch_text)}' "
                   f"(pf_risk='{pf_risk}', q_risk='{risk_profile}')")
 
     _make_pie(slide, rg_agg)
@@ -914,15 +833,11 @@ def _make_pie(slide, rg):
     plt.close(fig)
     buf.seek(0)
 
-    # ── Locate centre-text shape ("Portfolio / Allocation") by text content ──
-    center_text_el = None
+    # ── Locate shape ;155 (centre text — keep it, just get the element) ──────
+    shape_155_el = None
     for shape in slide.shapes:
-        if not shape.has_text_frame:
-            continue
-        txt = shape.text_frame.text.strip().lower()
-        if 'allocation' in txt and ('portfolio' in txt or len(txt) < 30):
-            center_text_el = shape._element
-            break
+        if ';155;' in shape.name:
+            shape_155_el = shape._element
 
     # ── Remove old pie-chart image (large, height > 1 M EMU) ─────────────────
     for shape in list(slide.shapes):
@@ -945,13 +860,13 @@ def _make_pie(slide, rg):
         Emu(PIE_IMG_WIDTH), Emu(PIE_IMG_HEIGHT),
     )
 
-    # Move new picture behind centre-text so the centre text stays on top
-    if center_text_el is not None:
+    # Move new picture behind shape ;155 so the centre text stays on top
+    if shape_155_el is not None:
         sp_tree = slide.shapes._spTree
         new_el  = new_pic._element
         sp_tree.remove(new_el)
-        center_text_el.addprevious(new_el)
-        print("  Slide 4: donut placed behind centre text")
+        shape_155_el.addprevious(new_el)
+        print("  Slide 4: donut placed behind shape ;155")
 
     # ── Update existing legend group text ─────────────────────────────────────
     _update_legend_groups(slide, parts, eq_total)
@@ -961,36 +876,29 @@ def _make_pie(slide, rg):
 def _update_legend_groups(slide, parts, eq_total):
     """
     Update percentage (and optionally label) text in the existing base-deck
-    legend groups. Matches label shapes by TEXT CONTENT
-    (Conservative/Balanced/Aggressive/Equity/Hybrid) rather than by shape IDs,
-    so it survives template edits.
+    legend groups.  Shape-name pairs from base deck:
+      ;177/;178  Conservative label/pct
+      ;179/;180  Balanced      label/pct
+      ;181/;182  Aggressive    label/pct
+      ;183/;184  Equity total  label/pct
+      ;188/;189  Hybrid        label/pct  (also used as template for extra categories)
     Extra non-equity categories (Debt, Gold & Silver, etc.) get cloned rows.
     """
     pct_map = {lb: pc for lb, pc, _ in parts}
     col_map = {lb: col for lb, _, col in parts}
 
-    KNOWN_LABELS = {'Conservative', 'Balanced', 'Aggressive', 'Equity', 'Hybrid'}
-
-    def _update_pct(pct_shape, cat):
-        val = eq_total if cat == 'Equity' else pct_map.get(cat, 0)
-        if val <= 0:
-            new_text = ''
-        elif val < 1:
-            new_text = '<1%'
-        else:
-            new_text = f'{val:.0f}%'
-        para = pct_shape.text_frame.paragraphs[0]
-        if para.runs:
-            para.runs[0].text = new_text
-            for r in para.runs[1:]:
-                r.text = ''
-        else:
-            para.text = new_text
-
-    def _hide_label(lbl_shape):
-        para = lbl_shape.text_frame.paragraphs[0]
-        if para.runs:
-            para.runs[0].text = ''
+    LEGEND_MAP = {
+        ';177;': ('Conservative', False),
+        ';178;': ('Conservative', True),
+        ';179;': ('Balanced',     False),
+        ';180;': ('Balanced',     True),
+        ';181;': ('Aggressive',   False),
+        ';182;': ('Aggressive',   True),
+        ';183;': ('Equity',       False),
+        ';184;': ('Equity',       True),
+        ';188;': ('Hybrid',       False),
+        ';189;': ('Hybrid',       True),
+    }
 
     for shape in slide.shapes:
         if shape.shape_type != 6:
@@ -1000,38 +908,37 @@ def _update_legend_groups(slide, parts, eq_total):
         except Exception:
             continue
 
-        # Find label shapes (exact text match) and pct shapes (contain '%')
-        label_shapes = []   # list of (cat, shape)
-        pct_shapes   = []
         for ch in children:
-            if not ch.has_text_frame:
-                continue
-            txt = ch.text_frame.text.strip()
-            if txt in KNOWN_LABELS:
-                label_shapes.append((txt, ch))
-            elif '%' in txt:
-                pct_shapes.append(ch)
-
-        # Pair each label with its nearest pct sibling (same row)
-        used_pct_ids = set()
-        for cat, lbl_sh in label_shapes:
-            # Prefer pct shape with closest top (same row)
-            best, best_dist = None, 1 << 30
-            for ps in pct_shapes:
-                if id(ps) in used_pct_ids:
+            for key, (cat, is_pct) in LEGEND_MAP.items():
+                if key not in ch.name:
                     continue
-                dt = abs(ps.top - lbl_sh.top)
-                if dt < best_dist:
-                    best_dist, best = dt, ps
-            if best is None:
-                continue
-            used_pct_ids.add(id(best))
-            _update_pct(best, cat)
-            # Hide label (and its pct) if the category is absent for this customer
-            if cat != 'Equity' and pct_map.get(cat, 0) == 0:
-                _hide_label(lbl_sh)
+                if not ch.has_text_frame:
+                    break
+                if is_pct:
+                    val = eq_total if cat == 'Equity' else pct_map.get(cat, 0)
+                    if val <= 0:
+                        new_text = ''
+                    elif val < 1:
+                        new_text = '<1%'
+                    else:
+                        new_text = f'{val:.0f}%'
+                    para = ch.text_frame.paragraphs[0]
+                    if para.runs:
+                        para.runs[0].text = new_text
+                        for r in para.runs[1:]:
+                            r.text = ''
+                    else:
+                        para.text = new_text
+                else:
+                    # Hide label if category absent for this customer
+                    if cat != 'Equity' and pct_map.get(cat, 0) == 0:
+                        para = ch.text_frame.paragraphs[0]
+                        if para.runs:
+                            para.runs[0].text = ''
+                break
 
-    # ── Clone the "Hybrid" group for extra non-equity categories ─────────────
+    # ── Clone Hybrid group for extra non-equity categories ───────────────────
+    # e.g. Debt Like, Gold & Silver, Solution, Global — these have no static slot
     eq_labels = {'Aggressive', 'Balanced', 'Conservative'}
     extra_cats = [(lb, pc, col_map.get(lb, '#808080'))
                   for lb, pc, _ in parts
@@ -1039,19 +946,11 @@ def _update_legend_groups(slide, parts, eq_total):
     if not extra_cats:
         return
 
-    # Find the Hybrid group: a GROUP that contains a child whose text == "Hybrid"
+    # Find the Hybrid group element (template for cloning)
     hybrid_grp = None
     for shape in slide.shapes:
-        if shape.shape_type != 6:
-            continue
-        try:
-            for ch in shape.shapes:
-                if ch.has_text_frame and ch.text_frame.text.strip() == 'Hybrid':
-                    hybrid_grp = shape
-                    break
-        except Exception:
-            continue
-        if hybrid_grp is not None:
+        if ';185;' in shape.name:
+            hybrid_grp = shape
             break
     if hybrid_grp is None:
         return
@@ -1504,7 +1403,7 @@ def _fill_scheme_slide(slide, spec, y_min=0, y_max=9_000_000):
                     break
         if has_rating:
             img_path = _get_rating_image(str(rating))
-            if img_path and os.path.exists(img_path):
+            if os.path.exists(img_path):
                 row_h = (row_ys[ri + 1] - y) if ri + 1 < len(row_ys) else 552450
                 img_y = y + (row_h - RATING_IMG_SZ) // 2
                 slide.shapes.add_picture(
@@ -1551,37 +1450,33 @@ def do_slide6(prs, pf, risk_profile):
         use_competitive = False
         diff = 0.0
 
-    box01_body = f'SIPs & lump sum over {years_int} years building a corpus of {cv_str}'
-    if use_competitive:
-        box02_heading = 'Delivering competitive returns'
-        box02_body    = f"Portfolio performance has edged past benchmark by {diff:.1f}%, you're on the right track"
-    else:
-        box02_heading = 'Aligned to your risk profile'
-        box02_body    = f'Your portfolio reflects your preferred risk level: {risk_profile}*'
-
-    # Match by existing template text content — resilient to shape-ID shifts.
-    # Box 01 heading is fixed ("Consistent investing discipline") — we leave it.
-    # Box 01 body starts with "SIPs & lump sum".
-    # Box 02 heading is one of the three variant titles.
-    # Box 02 body starts with "Solid absolute gains of" OR one of the variant bodies.
-    BOX02_HEADINGS = {
-        'Solid Absolute Gains',
-        'Delivering competitive returns',
-        'Aligned to your risk profile',
-    }
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
-        txt = shape.text_frame.text.strip()
-        tl  = txt.lower()
-        if 'sips' in tl and 'lump sum' in tl:
-            replace_text(shape, box01_body)
-        elif txt in BOX02_HEADINGS:
-            replace_text(shape, box02_heading)
-        elif ('solid absolute gains of' in tl
-              or 'portfolio performance has edged' in tl
-              or 'portfolio reflects your preferred' in tl):
-            replace_text(shape, box02_body)
+        name = shape.name
+
+        if name == 'Google Shape;220;p21':
+            # Box 01 description — has 8 runs; run[2]=years, run[6]=corpus value
+            runs = shape.text_frame.paragraphs[0].runs
+            if len(runs) >= 7:
+                runs[2].text = str(years_int)
+                runs[6].text = cv_str
+            else:
+                replace_text(shape, f'SIPs & lump sum over {years_int} years building a corpus of {cv_str}')
+
+        elif name == 'Google Shape;216;p21':
+            # Box 02 title
+            if use_competitive:
+                replace_text(shape, 'Delivering competitive returns')
+            else:
+                replace_text(shape, 'Aligned to your risk profile')
+
+        elif name == 'Google Shape;217;p21':
+            # Box 02 description
+            if use_competitive:
+                replace_text(shape, f"Portfolio performance has edged past benchmark by {diff:.1f}%, you're on the right track")
+            else:
+                replace_text(shape, f'Your portfolio reflects your preferred risk level: {risk_profile}*')
 
     variant = 'Delivering competitive returns' if use_competitive else 'Aligned to your risk profile'
     print(f"  Slide 6: {years_int}y, {cv_str}, variant='{variant}'")
@@ -1697,19 +1592,11 @@ def do_slide13(prs, pf_id, risk_profile, data):
     plt.close(fig)
     buf13.seek(0)
 
-    # ── Remove the old chart PICTURE — find by size/position, not shape ID ───
+    # ── Replace slide 13 chart image (;338) ───────────────────────────────────
     for shape in list(slide.shapes):
-        if (shape.shape_type == 13
-                and shape.width  > 3_000_000
-                and shape.height > 2_000_000
-                and shape.top    > 1_000_000):
-            try:
-                _ = shape.image
-                remove_shape(slide, shape)
-                print("  Slide 13: removed old chart image")
-                break
-            except Exception:
-                pass
+        if ';338;' in shape.name:
+            remove_shape(slide, shape)
+            break
 
     new_pic = slide.shapes.add_picture(
         buf13,
@@ -1722,39 +1609,22 @@ def do_slide13(prs, pf_id, risk_profile, data):
     sp_tree.remove(new_el)
     sp_tree.insert(2, new_el)
 
-    # ── Update text shapes by content matching ────────────────────────────────
-    import re as _re
-    final_val_pattern = _re.compile(r'^[₹]?\s*[\d.]+\s*L\s*$', _re.IGNORECASE)
-
-    # Collect all final-value shapes (e.g., "41.5L", "49.7L") and sort by top:
-    # upper = Infinite, lower = Actual
-    final_value_shapes = []
+    # ── Update text shapes ─────────────────────────────────────────────────────
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
-        txt = shape.text_frame.text.strip()
-        if final_val_pattern.match(txt):
-            final_value_shapes.append(shape)
-    final_value_shapes.sort(key=lambda s: s.top)
-    if len(final_value_shapes) >= 2:
-        replace_text(final_value_shapes[0], fmt_inr_rupee(inf_final).replace('₹', ''))
-        replace_text(final_value_shapes[1], fmt_inr_rupee(pf_final).replace('₹', ''))
-    elif len(final_value_shapes) == 1:
-        replace_text(final_value_shapes[0], fmt_inr_rupee(inf_final).replace('₹', ''))
-
-    # Infinite label — text starts with "Infinite" and contains a risk-profile word
-    risk_words = ('Very Aggressive', 'Aggressive', 'Very Conservative', 'Conservative', 'Balanced')
-    for shape in slide.shapes:
-        if not shape.has_text_frame:
-            continue
-        txt = shape.text_frame.text.strip()
-        if txt.startswith('Infinite') and any(w in txt for w in risk_words):
+        if ';329;' in shape.name:
             replace_text(shape, f'Infinite {risk_profile}')
-            break
+        elif ';334;' in shape.name:
+            # Actual final value (lower position)
+            replace_text(shape, fmt_inr_rupee(pf_final).replace('₹', ''))
+        elif ';335;' in shape.name:
+            # Infinite final value (higher position)
+            replace_text(shape, fmt_inr_rupee(inf_final).replace('₹', ''))
 
-    # ── XIRR table: find the only TABLE on the slide ──────────────────────────
+    # ── Update XIRR table (;327): row[1] col[1]=Infinite, col[2]=Actual ───────
     for shape in slide.shapes:
-        if shape.has_table:
+        if ';327;' in shape.name and shape.has_table:
             tbl = shape.table
             set_table_cell(tbl.cell(1, 1), f'{inf_xirr * 100:.2f}%')
             set_table_cell(tbl.cell(1, 2), f'{pf_xirr * 100:.2f}%')
@@ -1784,21 +1654,11 @@ def _iter_shapes_recursive(shapes):
 # QUESTIONNAIRE — answer lookup
 # ──────────────────────────────────────────────────────────────
 
-def _is_post_retirement(q_row) -> bool:
-    """Detect post-retirement income planning case (already retired client)."""
-    if q_row is None or q_row.empty:
-        return False
-    goals = str(q_row.get('Goals', '')).lower()
-    return 'post-retirement' in goals or 'post retirement' in goals
-
-
-def _get_answer(question_text, q_row, context='', post_ret=False):
+def _get_answer(question_text, q_row, context=''):
     """
     Map a questionnaire slide question to the customer's Excel answer.
     Returns the formatted answer string, or None if not matched.
     context: 'vehicle' | 'home' | '' — slide-level context for ambiguous questions.
-    post_ret: True when populating the post-retirement combo slide — pulls
-              answers from PostRet: columns instead of Ret: columns.
     """
     q = question_text.lower().strip()
 
@@ -1834,8 +1694,8 @@ def _get_answer(question_text, q_row, context='', post_ret=False):
     if 'monthly sip' in q and 'amount' in q:
         return _safe_inr(q_row.get('Monthly SIP Amount (with Infinite)', 0))
 
-    # Post-Retirement Income Planning slide (post_ret=True)
-    if post_ret:
+    # Post-Retirement Income Planning slide (context='postret')
+    if context == 'postret':
         if 'discretionary' in q:
             return _safe_inr(q_row.get('PostRet: Discretionary Expenses', 0))
         if 'monthly income' in q and 'expense' in q:
@@ -1874,10 +1734,10 @@ def _get_answer(question_text, q_row, context='', post_ret=False):
             if isinstance(v, float) and pd.isna(v): return '-'
             try: return f'{int(v)} years'
             except Exception: return _safe_str(v)
-        if 'down payment' in q:
-            return _safe_pct(q_row.get('Home: Down Payment %'))
         if 'debt financing' in q:
             return _safe_str(q_row.get('Home: Loan Y/N'))
+        if 'down payment' in q:
+            return _safe_pct(q_row.get('Home: Down Payment %'))
     if 'value of home' in q:
         return _safe_inr(q_row.get('Home: Value', 0))
     if 'monthly rent' in q:
@@ -1887,57 +1747,43 @@ def _get_answer(question_text, q_row, context='', post_ret=False):
 
     # Children's Education
     if 'number of children' in q and 'education' in q:
-        count = 0
-        for i in range(1, 5):
-            v = q_row.get(f'Edu: Child {i} UG Year', '')
-            if v is None or str(v).strip() in ('', 'nan', '-'):
-                continue
-            try:
-                if pd.isna(v):
-                    continue
-            except (TypeError, ValueError):
-                pass
-            count += 1
+        count = sum(1 for i in range(1, 5)
+                    if not (isinstance(q_row.get(f'Edu: Child {i} UG Year', float('nan')), float)
+                            and pd.isna(q_row.get(f'Edu: Child {i} UG Year', float('nan')))))
         return str(max(count, 1))
     if 'undergraduate' in q and 'start year' in q:
-        years = []
-        for i in range(1, 5):
-            v = q_row.get(f'Edu: Child {i} UG Year', '')
-            if _is_blank(v):
-                continue
-            years.append(_safe_str(v))
+        years = [_safe_str(q_row.get(f'Edu: Child {i} UG Year'))
+                 for i in range(1, 5)
+                 if not (isinstance(q_row.get(f'Edu: Child {i} UG Year'), float)
+                         and pd.isna(q_row.get(f'Edu: Child {i} UG Year')))]
         return ' & '.join(years) if years else '-'
     if 'cost' in q and 'undergraduate' in q:
         costs = []
         for i in range(1, 5):
-            c = q_row.get(f'Edu: Child {i} UG Cost', '')
-            if _is_blank(c):
-                continue
-            try:
-                if float(c) > 0:
-                    costs.append(_safe_inr(float(c)))
-            except (ValueError, TypeError):
-                pass
+            c = q_row.get(f'Edu: Child {i} UG Cost')
+            if c is not None and not (isinstance(c, float) and pd.isna(c)):
+                try:
+                    if float(c) > 0:
+                        costs.append(_safe_inr(float(c)))
+                except (ValueError, TypeError):
+                    pass
         return ' & '.join(costs) if costs else '-'
     if 'postgraduate' in q and 'start year' in q:
-        years = []
-        for i in range(1, 5):
-            v = q_row.get(f'Edu: Child {i} PG Year', '')
-            if _is_blank(v):
-                continue
-            years.append(_safe_str(v))
+        years = [_safe_str(q_row.get(f'Edu: Child {i} PG Year'))
+                 for i in range(1, 5)
+                 if not (isinstance(q_row.get(f'Edu: Child {i} PG Year'), float)
+                         and pd.isna(q_row.get(f'Edu: Child {i} PG Year')))]
         return ' & '.join(years) if years else '-'
     if 'cost' in q and 'postgraduate' in q:
         costs = []
         for i in range(1, 5):
-            c = q_row.get(f'Edu: Child {i} PG Cost', '')
-            if _is_blank(c):
-                continue
-            try:
-                if float(c) > 0:
-                    costs.append(_safe_inr(float(c)))
-            except (ValueError, TypeError):
-                pass
+            c = q_row.get(f'Edu: Child {i} PG Cost')
+            if c is not None and not (isinstance(c, float) and pd.isna(c)):
+                try:
+                    if float(c) > 0:
+                        costs.append(_safe_inr(float(c)))
+                except (ValueError, TypeError):
+                    pass
         return ' & '.join(costs) if costs else '-'
 
     # Children's Marriage
@@ -2192,28 +2038,22 @@ def populate_questionnaire_slide(slide, q_row):
     """
     # Detect slide context by scanning all shapes (including inside groups)
     slide_context = ''
-    slide_text_lower = ''
     for shape in _iter_shapes_recursive(slide.shapes):
         if not shape.has_text_frame:
             continue
         t = shape.text_frame.text
-        slide_text_lower += ' ' + t.lower()
+        tl = t.lower()
         if 'Vehicle Purchase' in t or ('Vehicle' in t and 'Purchase' in t):
             slide_context = 'vehicle'
             break
         if 'Home Purchase' in t or ('Home' in t and 'Purchase' in t):
             slide_context = 'home'
             break
-
-    # Post-retirement combo slide: contains both "monthly income & monthly
-    # expense" question AND "financial investments apart from mutual funds"
-    # question (and lacks the "expected change in expenses post-retirement"
-    # question that lives on the regular retirement slide).
-    is_post_ret_slide = (
-        'monthly income' in slide_text_lower
-        and 'financial investments apart' in slide_text_lower
-        and 'expected change in expenses' not in slide_text_lower
-    )
+        # Post-Retirement Income Planning slide has the unique
+        # "Annual discretionary expenses" question
+        if 'discretionary' in tl:
+            slide_context = 'postret'
+            break
 
     for shape in slide.shapes:
         if shape.shape_type != 6:
@@ -2253,7 +2093,7 @@ def populate_questionnaire_slide(slide, q_row):
                 continue
 
         q_text = q_shape.text_frame.text.strip()
-        answer = _get_answer(q_text, q_row, context=slide_context, post_ret=is_post_ret_slide)
+        answer = _get_answer(q_text, q_row, context=slide_context)
         if answer is not None:
             q_lo = q_text.lower()
             if 'portfolio to grow' in q_lo or ('prefer' in q_lo and 'portfolio' in q_lo):
@@ -2265,6 +2105,8 @@ def populate_questionnaire_slide(slide, q_row):
 # ──────────────────────────────────────────────────────────────
 # RISK REWARD SLIDES — insert 4 slides from risk_reward deck at slide 15
 # ──────────────────────────────────────────────────────────────
+
+# Risk Reward deck is fetched from Drive lazily via _get_rr_deck_path()
 
 # Risk profile → 0-based start index in the risk-reward deck (groups of 4)
 RISK_REWARD_IDX = {
@@ -2458,12 +2300,11 @@ def do_risk_reward_slides(prs, risk_profile, goals=None):
     from the risk-reward deck that correspond to risk_profile.
     Uses in-place content replacement to avoid XML part-name collisions.
     """
-    # Download Risk Reward deck from Google Drive
     try:
-        rr_path = _get_rr_deck_path()
-        rr_prs = Presentation(rr_path)
+        _rr_path = _get_rr_deck_path()
     except Exception as e:
-        print(f"  Risk Reward: could not load deck — {e}"); return
+        print(f"  Risk Reward: Drive fetch failed - skipping ({e})"); return
+    rr_prs = Presentation(_rr_path)
     start  = RISK_REWARD_IDX.get(risk_profile, 8)
 
     count = 0
@@ -2508,7 +2349,11 @@ def do_questionnaire(prs, goals, q_row):
     norm = set()
     for g in goals:
         gl = g.lower()
-        if 'retirement' in gl:  norm.add('Retirement Planning')
+        # Distinguish "Post-Retirement Income Planning" from plain "Retirement Planning"
+        if 'post' in gl and 'retirement' in gl:
+            norm.add('Post-Retirement Income Planning')
+        elif 'retirement' in gl:
+            norm.add('Retirement Planning')
         if 'home'       in gl:  norm.add('Home Purchase')
         if 'education'  in gl:  norm.add("Children's Education")
         if 'marriage'   in gl:  norm.add("Children's Marriage")
@@ -2573,60 +2418,54 @@ def do_questionnaire(prs, goals, q_row):
                 to_del.append(idx)
                 print(f"    Remove: PG slide (PG cost is 0 or missing)")
 
-    # ── Retirement vs Post-Retirement slide selection ─────────────────────────
-    # Templates contain TWO sets of "| Goals" slides:
-    #   • Regular retirement: 2 slides w/ income/expenses, monthly investment,
-    #     YoY investment increase, expense change %, other investments, liabilities
-    #   • Post-retirement combo: 1 slide w/ just income/expenses + other investments
-    # The post-retirement combo slide is identified by having BOTH the
-    # "monthly income & monthly expense" question AND the "financial investments
-    # apart from mutual funds" question, and NOT the "expected change in expenses"
-    # question (which only lives on the regular retirement slide).
-    def _slide_is_post_ret_combo(slide):
-        text = ' '.join(
-            sh.text_frame.text.lower()
-            for sh in _iter_shapes_recursive(slide.shapes)
-            if sh.has_text_frame
-        )
-        return (
-            'monthly income' in text
-            and 'financial investments apart' in text
-            and 'expected change in expenses' not in text
-        )
-
-    def _slide_is_goals(slide):
-        for shape in slide.shapes:
-            if shape.has_text_frame:
-                t = shape.text_frame.text
-                if '| Goals' in t and 'Infinite Questionnaire' in t:
-                    return True
-        return False
-
-    is_post_ret_case = _is_post_retirement(q_row) if not q_row.empty else False
-
-    if 'Retirement Planning' not in norm and not is_post_ret_case:
-        # Client did not select any retirement-related goal — drop ALL Goals slides
-        for idx in q_indices:
-            if _slide_is_goals(prs.slides[idx]) and idx not in to_del:
+    # Remove Retirement / Post-Retirement Goals slides based on goal selection.
+    # There are three "| Goals" slides in the base deck:
+    #   - Retirement Planning (5/6):        has "Expected change in expenses post-retirement"
+    #   - Retirement Planning (6/6):        has "Expected year-on-year increase in investment"
+    #         (a generic follow-up only relevant to ongoing Retirement Planning)
+    #   - Post-Retirement Income Planning:  has "Annual discretionary expenses"
+    # Rules:
+    #   has Retirement Planning only       → keep 5/6 + 6/6,   delete post-ret
+    #   has Post-Retirement Planning only  → keep post-ret,    delete 5/6 + 6/6
+    #   has both                           → keep all three
+    #   has neither                        → delete all three
+    has_ret      = 'Retirement Planning' in norm
+    has_post_ret = 'Post-Retirement Income Planning' in norm
+    for idx in q_indices:
+        slide = prs.slides[idx]
+        title = ''
+        is_retirement_variant  = False   # 5/6 "change in expenses post-retirement"
+        is_postret_variant     = False   # new 5/6 "annual discretionary expenses"
+        is_generic_goals       = False   # 6/6 "year-on-year increase"
+        for shape in _iter_shapes_recursive(slide.shapes):
+            if not shape.has_text_frame: continue
+            t  = shape.text_frame.text
+            tl = t.lower()
+            if 'Infinite Questionnaire' in t and '| Goals' in t:
+                title = t.strip()
+            if 'change in expenses' in tl and 'post-retirement' in tl:
+                is_retirement_variant = True
+            if 'discretionary' in tl:
+                is_postret_variant = True
+            if 'year-on-year' in tl:
+                is_generic_goals = True
+        if not title:
+            continue
+        # Decide whether to keep this slide
+        if is_postret_variant and not has_post_ret:
+            if idx not in to_del:
                 to_del.append(idx)
-                print(f"    Remove: Retirement Goals slide")
-    elif is_post_ret_case:
-        # Post-retirement client — keep ONLY the combo slide; drop the regular
-        # retirement Goals slides.
-        for idx in q_indices:
-            slide = prs.slides[idx]
-            if _slide_is_goals(slide) and not _slide_is_post_ret_combo(slide):
-                if idx not in to_del:
-                    to_del.append(idx)
-                    print(f"    Remove: Regular retirement Goals slide (post-retirement case)")
-    else:
-        # Regular retirement client — drop the post-retirement combo slide.
-        for idx in q_indices:
-            slide = prs.slides[idx]
-            if _slide_is_goals(slide) and _slide_is_post_ret_combo(slide):
-                if idx not in to_del:
-                    to_del.append(idx)
-                    print(f"    Remove: Post-retirement combo slide (regular retirement case)")
+                print(f"    Remove: Post-Retirement Goals slide (goal not selected)")
+        elif is_retirement_variant and not has_ret:
+            if idx not in to_del:
+                to_del.append(idx)
+                print(f"    Remove: Retirement Goals slide (goal not selected)")
+        elif is_generic_goals and not has_ret:
+            # Generic 6/6 goals slide belongs to Retirement Planning — delete it if
+            # regular Retirement Planning is not selected (even if post-retirement is).
+            if idx not in to_del:
+                to_del.append(idx)
+                print(f"    Remove: Generic Goals (6/6) slide (Retirement Planning not selected)")
 
     for idx in sorted(set(to_del), reverse=True):
         delete_slide(prs, idx)
@@ -2652,18 +2491,17 @@ def do_questionnaire(prs, goals, q_row):
 # ──────────────────────────────────────────────────────────────
 
 def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None):
-    """
-    Generate a personalised M2 strategy deck.
+    """Generate a personalised M2 strategy deck.
 
     Args:
         pf_id: Client PF_ID
         customer_name: Client display name
-        data: Pre-loaded data dict (optional — loaded from Google Sheets if None)
+        data: Pre-loaded data dict (optional - loaded from Google Sheets if None)
         questionnaire_name: If provided, match questionnaire row by this name
                             instead of using customer_name for matching.
 
     Returns:
-        (pptx_bytes: BytesIO, filename: str) on success, or raises an Exception.
+        (pptx_bytes: BytesIO, filename: str)
     """
     print(f"\n{'='*60}")
     print(f"  Generating deck for: {customer_name}  ({pf_id})")
@@ -2675,50 +2513,46 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None):
         data = load_data()
 
     # Validate PF_ID
-    pf_df  = data['pf_level']
-    pf_row = pf_df[pf_df['PF_ID'] == pf_id]
+    pf_df  = data["pf_level"]
+    pf_row = pf_df[pf_df["PF_ID"] == pf_id]
     if pf_row.empty:
         raise ValueError(f"PF_ID '{pf_id}' not found in PF_level sheet.")
     pf_row = pf_row.iloc[0]
 
-    # Match questionnaire row
-    qdf   = data['questionnaire']
+    # Match questionnaire row - PF_ID first, then saved name, then exact/partial
+    qdf   = data["questionnaire"]
     q_row = pd.Series(dtype=object)
     match_name = questionnaire_name or customer_name
 
-    # 1. Try saved questionnaire_name (exact match on Name column)
-    if questionnaire_name:
-        name_col = next((c for c in qdf.columns if c.lower() == 'name'), None)
+    if "PF_ID" in qdf.columns:
+        match = qdf[qdf["PF_ID"] == pf_id]
+        if not match.empty:
+            q_row = match.iloc[0]
+            print(f"  Questionnaire: matched by PF_ID -> '{q_row.get('Name', '?')}'")
+
+    if q_row.empty and questionnaire_name:
+        name_col = next((c for c in qdf.columns if c.lower() == "name"), None)
         if name_col:
             match = qdf[qdf[name_col].astype(str).str.strip().str.lower() == questionnaire_name.strip().lower()]
             if not match.empty:
                 q_row = match.iloc[0]
                 print(f"  Questionnaire: matched by saved mapping -> '{q_row.get(name_col, '?')}'")
 
-    # 2. Try PF_ID column if present
-    if q_row.empty and 'PF_ID' in qdf.columns:
-        match = qdf[qdf['PF_ID'] == pf_id]
-        if not match.empty:
-            q_row = match.iloc[0]
-            print(f"  Questionnaire: matched by PF_ID -> '{q_row.get('Name', '?')}'")
-
-    # 3. Try exact name match
     if q_row.empty:
-        name_col = next((c for c in qdf.columns if c.lower() == 'name'), None)
+        name_col = next((c for c in qdf.columns if c.lower() == "name"), None)
         if name_col:
             for _, r in qdf.iterrows():
-                if str(r.get(name_col, '')).lower().strip() == match_name.lower().strip():
+                if str(r.get(name_col, "")).lower().strip() == match_name.lower().strip():
                     q_row = r
                     print(f"  Questionnaire: matched by exact name '{r[name_col]}'")
                     break
 
-    # 4. Try partial (first-name) match
     if q_row.empty and match_name:
-        name_col = next((c for c in qdf.columns if c.lower() == 'name'), None)
+        name_col = next((c for c in qdf.columns if c.lower() == "name"), None)
         if name_col:
             first = match_name.lower().split()[0]
             for _, r in qdf.iterrows():
-                if first in str(r.get(name_col, '')).lower():
+                if first in str(r.get(name_col, "")).lower():
                     q_row = r
                     print(f"  Questionnaire: partial name match '{r[name_col]}'")
                     break
@@ -2727,24 +2561,24 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None):
         print(f"  WARNING: no questionnaire row for '{customer_name}'")
 
     # Riskgroup aggregation
-    rg     = data['riskgroup'][data['riskgroup']['PF_ID'] == pf_id]
-    rg_agg = (rg.groupby('RISK_GROUP_L0')
-               .agg({'% of PF': 'sum', 'CURRENT_VALUE': 'sum'})
+    rg     = data["riskgroup"][data["riskgroup"]["PF_ID"] == pf_id]
+    rg_agg = (rg.groupby("RISK_GROUP_L0")
+               .agg({"% of PF": "sum", "CURRENT_VALUE": "sum"})
                .reset_index())
 
     # Risk profile
     print("\n[2/8] Risk profile...")
-    risk_profile = calc_risk_profile(q_row) if not q_row.empty else 'Balanced'
+    risk_profile = calc_risk_profile(q_row) if not q_row.empty else "Balanced"
 
     # Download base deck from Google Drive and open
-    print("\n[2b/8] Downloading templates from Drive...")
+    print("\n[2b/8] Downloading base deck from Drive...")
     base_deck_path = _get_base_deck_path()
     prs = Presentation(base_deck_path)
     print(f"  Opened base deck template (from Drive)")
 
-    first_name = customer_name.split()[0] if customer_name else 'Client'
+    first_name = customer_name.split()[0] if customer_name else "Client"
 
-    # Process slides
+    # Process slides (same order as local M2/app.py)
     print("\n[3/9] Slide 1 - Title")
     do_slide1(prs, customer_name)
 
@@ -2773,11 +2607,11 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None):
     do_hyperlinks(prs, n_appendix)
 
     print("[9/9] Risk Reward Slides (15-18)")
-    rr_goals = parse_goals(q_row.get('Goals', '')) if not q_row.empty else []
+    rr_goals = parse_goals(q_row.get("Goals", "")) if not q_row.empty else []
     do_risk_reward_slides(prs, risk_profile, goals=rr_goals)
 
     print("[10/9] Questionnaire Slides")
-    goals = parse_goals(q_row.get('Goals', '')) if not q_row.empty else []
+    goals = parse_goals(q_row.get("Goals", "")) if not q_row.empty else []
     do_questionnaire(prs, goals, q_row)
 
     # Save to BytesIO
@@ -2785,8 +2619,8 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None):
     prs.save(buf)
     buf.seek(0)
 
-    safe = re.sub(r'[^\w\s-]', '', customer_name).strip().replace(' ', '_')
-    filename = f'{safe}_{pf_id[:12]}_deck.pptx'
+    safe = re.sub(r"[^\w\s-]", "", customer_name).strip().replace(" ", "_")
+    filename = f"{safe}_{pf_id[:12]}_deck.pptx"
 
     print(f"\n{'='*60}")
     print(f"  DONE  ->  {filename}")
