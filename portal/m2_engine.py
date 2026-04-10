@@ -391,11 +391,22 @@ def calc_risk_profile(q):
     idx = max(0, min(4, idx + f_adj))
 
     # Step 4: Liability management adjustment
+    #
+    # The three real answers currently in the questionnaire form are:
+    #   "Yes - comfortably"  → has liabilities, managing fine        → 0
+    #   "No I don't foresee" → no liabilities at all                 → 0
+    #   "Just about"         → has liabilities and barely managing   → -1
+    #
+    # Only "Just about" (or equivalent stress wording) downgrades. Matching
+    # by 'yes' / 'comfort' alone misclassified "No I don't foresee" as stress
+    # and incorrectly subtracted 1 from the risk index.
     liab = str(q.get('Liability Followup Answer', '')).lower()
-    if not liab or 'yes' in liab or 'comfort' in liab:
-        l_adj = 0   # comfortably / no liabilities → no change
+    stress_kws = ('just about', 'barely', 'struggl', 'difficult', 'tight', 'hardly')
+    if any(k in liab for k in stress_kws):
+        l_adj = -1
     else:
-        l_adj = -1  # 'just about', 'barely', 'no', 'struggling' → downgrade one tier
+        # empty / "yes comfortably" / "no I don't foresee" / etc. → no change
+        l_adj = 0
     idx = max(0, min(4, idx + l_adj))
 
     profile = RISK_SCALE[idx]
