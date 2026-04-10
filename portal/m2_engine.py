@@ -112,6 +112,12 @@ def _get_rating_image(key):
     fid, fname = file_map[key]
     return _download_drive_file(fid, fname)
 
+# Set of valid POWERRATING values — used as a membership check before
+# attempting to fetch the rating image from Drive via _get_rating_image().
+# Kept as a set (not a dict like in M2-automation/app.py) because the portal
+# resolves image paths lazily through Drive instead of reading from disk.
+RATING_IMAGES = {'IN_FORM', 'ON_TRACK', 'OUT_OF_FORM', 'OFF_TRACK'}
+
 # Pie-chart colours — taken directly from base deck legend shapes
 CHART_COLORS = {
     '1) Aggressive':   '#2E8AE5',
