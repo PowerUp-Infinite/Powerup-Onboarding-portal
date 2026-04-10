@@ -81,22 +81,33 @@ def _load_credentials() -> service_account.Credentials:
 
 # Cache resource so clients are built once per Streamlit session,
 # not on every rerun.
+#
+# cache_discovery=False: disables googleapiclient's on-disk discovery-doc cache.
+# When the service client is cached via @st.cache_resource AND the discovery
+# file cache is enabled, Streamlit Cloud's ephemeral /tmp can delete the cache
+# file between reruns while the in-memory client still holds a reference to
+# it. The next API call then tries to .read() a None file handle and raises
+# "'NoneType' object has no attribute 'read'". Using static_discovery (built
+# into the client library) avoids filesystem state entirely.
 @st.cache_resource(show_spinner=False)
 def get_sheets_service():
     """Return an authenticated Google Sheets API client (v4)."""
-    return build("sheets", "v4", credentials=_load_credentials())
+    return build("sheets", "v4", credentials=_load_credentials(),
+                 cache_discovery=False)
 
 
 @st.cache_resource(show_spinner=False)
 def get_drive_service():
     """Return an authenticated Google Drive API client (v3)."""
-    return build("drive", "v3", credentials=_load_credentials())
+    return build("drive", "v3", credentials=_load_credentials(),
+                 cache_discovery=False)
 
 
 @st.cache_resource(show_spinner=False)
 def get_slides_service():
     """Return an authenticated Google Slides API client (v1)."""
-    return build("slides", "v1", credentials=_load_credentials())
+    return build("slides", "v1", credentials=_load_credentials(),
+                 cache_discovery=False)
 
 
 def check_auth() -> tuple[bool, str]:
