@@ -29,21 +29,34 @@ def repo_root() -> Path:
 
 
 def _load_env_file() -> None:
-    """Read portal/.env if present (dev mode) so os.environ is populated the
-    same way the Streamlit app does. Ignored silently in bundled mode."""
-    env_path = repo_root() / 'portal' / '.env'
-    if not env_path.exists():
-        return
-    for line in env_path.read_text(encoding='utf-8').splitlines():
-        line = line.strip()
-        if not line or line.startswith('#'):
+    """Populate os.environ from the env file bundled alongside the app.
+
+    Resolution order:
+      1. desktop/resources/.env    (bundled at build time — works in both
+         dev mode and frozen .exe/.app)
+      2. portal/.env               (dev-mode fallback — only exists when
+         running directly from the repo source tree)
+
+    First file found wins.
+    """
+    candidates = [
+        Path(resource_path('resources', '.env')),
+        repo_root() / 'portal' / '.env',
+    ]
+    for env_path in candidates:
+        if not env_path.exists():
             continue
-        if '=' not in line:
-            continue
-        k, v = line.split('=', 1)
-        k = k.strip()
-        v = v.strip().strip('"').strip("'")
-        os.environ.setdefault(k, v)
+        for line in env_path.read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '=' not in line:
+                continue
+            k, v = line.split('=', 1)
+            k = k.strip()
+            v = v.strip().strip('"').strip("'")
+            os.environ.setdefault(k, v)
+        break  # first hit wins
 
 
 _load_env_file()

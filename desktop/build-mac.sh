@@ -41,14 +41,22 @@ source .venv/bin/activate
 python -m pip install --upgrade pip --quiet
 python -m pip install -r requirements.txt --quiet
 
-echo "[3/4] Verifying credentials.json is bundled..."
+echo "[3/5] Verifying credentials.json is bundled..."
 if [[ ! -f "resources/credentials.json" ]]; then
     echo "[ERROR] desktop/resources/credentials.json is missing."
     echo "        Copy your service account JSON to that path before building."
     exit 1
 fi
 
-echo "[4/4] Running PyInstaller..."
+echo "[4/5] Copying portal/.env into bundled resources/..."
+if [[ ! -f "../portal/.env" ]]; then
+    echo "[ERROR] ../portal/.env does not exist."
+    echo "        The desktop app reads config values from portal/.env at build time."
+    exit 1
+fi
+cp -f "../portal/.env" "resources/.env"
+
+echo "[5/5] Running PyInstaller..."
 pyinstaller PowerUp-Portal.spec --clean --noconfirm
 
 echo

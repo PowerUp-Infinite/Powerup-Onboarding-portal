@@ -37,14 +37,26 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [3/4] Verifying credentials.json is bundled...
+echo [3/5] Verifying credentials.json is bundled...
 if not exist "resources\credentials.json" (
     echo [ERROR] desktop\resources\credentials.json is missing.
     echo         Copy your service account JSON to that path before building.
     exit /b 1
 )
 
-echo [4/4] Running PyInstaller...
+echo [4/5] Copying portal\.env into bundled resources\...
+if not exist "..\portal\.env" (
+    echo [ERROR] ..\portal\.env does not exist.
+    echo         The desktop app reads config values from portal\.env at build time.
+    exit /b 1
+)
+copy /Y "..\portal\.env" "resources\.env" >NUL
+if errorlevel 1 (
+    echo [ERROR] Could not copy portal\.env to resources\.env.
+    exit /b 1
+)
+
+echo [5/5] Running PyInstaller...
 pyinstaller PowerUp-Portal.spec --clean --noconfirm
 if errorlevel 1 (
     echo [ERROR] PyInstaller build failed.
