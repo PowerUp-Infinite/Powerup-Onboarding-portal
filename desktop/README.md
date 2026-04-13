@@ -5,6 +5,14 @@ Runs entirely on the user's machine; reads data from a local Excel file; fetches
 questionnaire responses + monthly reference data from Google Sheets; uploads the
 generated deck to the same Drive folders the cloud portal uses.
 
+## Two distribution formats
+
+| Format | Output | When to use |
+|---|---|---|
+| **Folder + .bat** | `desktop/dist/PowerUp-Portal-Windows/` (~350 KB) | **Default for Windows.** Bypasses Smart App Control. Teammates install Python once, then double-click `run-PowerUp-Portal.bat`. |
+| **Single .exe** | `desktop/dist/PowerUp-Portal.exe` (~84 MB) | Optional. Self-contained. Requires either disabling Smart App Control or buying a code-signing cert. |
+| **macOS .app** | `desktop/dist/PowerUp-Portal.app` | macOS only. Built via PyInstaller on a Mac. |
+
 ## Who should use which version
 
 - **Cloud portal** (`portal/` in this repo, on Streamlit): shared, no install.
@@ -20,9 +28,18 @@ output is indistinguishable.
 
 Download the folder for your OS from the shared Google Drive:
 
-### Windows
-1. Download `PowerUp-Portal-Windows/PowerUp-Portal.exe`.
-2. Double-click to run. Done.
+### Windows (recommended path — folder + .bat)
+1. Install Python 3.11 from https://www.python.org/downloads/windows/
+   — tick "Add python.exe to PATH" during install.
+2. Download `PowerUp-Portal-Windows.zip` from the shared Google Drive.
+3. Extract anywhere (e.g. `Documents\PowerUp-Portal\`).
+4. Open `INSTALL.txt` and follow the 3 steps. Daily use is then just
+   double-clicking `run-PowerUp-Portal.bat`.
+
+### Windows (alternative — single .exe, requires SAC bypass)
+1. Download `PowerUp-Portal.exe`.
+2. Double-click. If Smart App Control blocks it, you'll need to either
+   disable SAC (one-way) or get a code-signed build.
 
 ### macOS
 1. Download `PowerUp-Portal-Mac/PowerUp-Portal-Mac.zip`.
@@ -57,12 +74,24 @@ authenticates to Google automatically.
   cp pre-onboarding-portal-487d94175c10.json desktop/resources/credentials.json
   ```
 
-### Build on Windows
+### Build on Windows — folder distribution (RECOMMENDED)
+```cmd
+cd desktop
+package-windows.bat
+```
+Produces `desktop/dist/PowerUp-Portal-Windows/` (~350 KB) containing
+`install.bat`, `run-PowerUp-Portal.bat`, `INSTALL.txt`, and the `app/`
+folder with all Python source. Right-click → "Send to" → "Compressed
+folder", upload the .zip to Drive, share with teammates.
+
+### Build on Windows — single .exe (alternative)
 ```cmd
 cd desktop
 build-windows.bat
 ```
-Produces `desktop/dist/PowerUp-Portal.exe` (~250 MB, single file).
+Produces `desktop/dist/PowerUp-Portal.exe` (~84 MB, single file). Avoid
+unless you have a code-signing certificate or Smart App Control is off
+on every target machine.
 
 ### Build on macOS
 ```bash

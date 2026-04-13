@@ -1,0 +1,54 @@
+PowerUp Portal — Windows install guide
+=======================================
+
+You only need to do this ONCE. After setup, daily use is just a
+double-click on run-PowerUp-Portal.bat.
+
+
+Step 1.  Install Python 3.11 (one time, ~3 min)
+------------------------------------------------
+1. Open: https://www.python.org/downloads/windows/
+2. Click the yellow "Download Python 3.11.x" button
+3. Run the installer
+4. ** IMPORTANT **  Tick the box at the bottom:
+        [x] Add python.exe to PATH
+5. Click "Install Now"
+6. When it finishes, click "Close"
+
+(If you already have Python 3.11 or later, you can skip this step.)
+
+
+Step 2.  Set up PowerUp Portal (one time, ~2 min)
+--------------------------------------------------
+1. Extract this folder somewhere on your computer
+     (e.g. Documents\PowerUp-Portal\)
+2. Open the folder in File Explorer
+3. Double-click   install.bat
+4. A black command window appears, shows progress,
+   then says "Setup complete!". Press any key to close.
+
+
+Step 3.  Run the app (every time you want to use it)
+----------------------------------------------------
+Double-click   run-PowerUp-Portal.bat
+
+The PowerUp Portal window opens. Use the M1 / M2 / M3 tabs
+as you would on the cloud version.
+
+
+Troubleshooting
+---------------
+"Python is not installed or not on PATH"
+    → You missed Step 1 part 4 (the tickbox). Uninstall Python and
+      reinstall with the "Add to PATH" box ticked.
+
+"Windows Defender blocked this file"
+    → Right-click install.bat or run-PowerUp-Portal.bat →
+      Properties → tick [x] Unblock → OK. Then try again.
+
+Nothing happens when I double-click run-PowerUp-Portal.bat
+    → Right-click it → Edit. The file should be only a few lines
+      starting with @echo off. If not, re-download the folder.
+
+Anything else
+    → Ping Krutang with a screenshot of the error.

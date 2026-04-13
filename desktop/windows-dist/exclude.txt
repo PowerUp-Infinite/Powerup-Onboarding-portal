@@ -1,0 +1,15 @@
+__pycache__
+.pyc
+.mypy_cache
+.pptx
+.png
+.xlsx
+.env
+_create_timeseries_sheet.py
+_inspect_s4_s6_s13.py
+migrate_to_sheets.py
+verify_setup.py
+.streamlit
+tabs\
+.env.example
+requirements.txt

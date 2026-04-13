@@ -37,6 +37,11 @@ _backups/
 Thumbs.db
 
 # Desktop app build artefacts and local credentials
+# - dist/ holds both the PyInstaller .exe and the package-windows.bat output
+# - build/ is PyInstaller scratch
+# - .venv/ is the local Python venv used for development
+# - resources/{credentials.json, .env} are bundled at build time but never
+#   committed (would leak the service account key)
 desktop/dist/
 desktop/build/
 desktop/.venv/
