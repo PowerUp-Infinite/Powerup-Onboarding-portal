@@ -1,0 +1,65 @@
+PowerUp Portal — macOS install guide
+=====================================
+
+You only need to do this ONCE. After setup, daily use is just a
+double-click on run-PowerUp-Portal.command.
+
+
+Step 1.  Install Python 3.11 (one time, ~3 min)
+------------------------------------------------
+Option A — installer from python.org (recommended for non-developers):
+    1. Open: https://www.python.org/downloads/macos/
+    2. Click the yellow "Download Python 3.11.x" button
+       (pick the "macOS 64-bit universal2 installer")
+    3. Run the .pkg installer, click Continue / Continue / Install
+    4. After it finishes you'll have python3.11 available everywhere.
+
+Option B — Homebrew (if you already use brew):
+    brew install python@3.11
+
+(If you already have Python 3.11 or later, skip this step.)
+
+
+Step 2.  Set up PowerUp Portal (one time, ~2 min)
+--------------------------------------------------
+1. Extract this folder somewhere on your Mac
+     (e.g. ~/Documents/PowerUp-Portal/)
+2. Open Terminal (Cmd+Space → "Terminal" → Enter)
+3. Drag the install.sh file from the folder into the Terminal window
+   and press Enter.
+
+   (Or: cd into the folder yourself and run:  bash install.sh)
+
+4. The Terminal shows progress, then says "Setup complete!".
+
+
+Step 3.  Run the app (every time you want to use it)
+----------------------------------------------------
+Double-click   run-PowerUp-Portal.command
+
+The PowerUp Portal window opens.
+
+** First time only: ** macOS Gatekeeper will refuse to open the file
+because it's unsigned. To bypass:
+   1. Right-click run-PowerUp-Portal.command
+   2. Click "Open"
+   3. In the warning dialog, click "Open" again
+macOS remembers this choice — from then on, double-click works normally.
+
+
+Troubleshooting
+---------------
+"command not found: python3" or similar
+    → You missed Step 1, or the installer didn't add python3 to PATH.
+      Re-run the python.org installer, OR install via brew.
+
+"This script cannot be opened because it is from an unidentified developer"
+    → Right-click the .command file → Open. Click Open in the prompt.
+
+Nothing happens when I double-click run-PowerUp-Portal.command
+    → Check the file is executable:
+        chmod +x run-PowerUp-Portal.command
+      Then try double-clicking again.
+
+Anything else
+    → Ping Krutang with a screenshot of the error.

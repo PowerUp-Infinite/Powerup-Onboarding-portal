@@ -1,6 +1,6 @@
 @echo off
-REM ─────────────────────────────────────────────────────────────
-REM PowerUp Portal — build the Windows distribution folder.
+REM -------------------------------------------------------------
+REM PowerUp Portal - build the Windows distribution folder.
 REM
 REM Produces a ready-to-zip folder at:
 REM   desktop\dist\PowerUp-Portal-Windows\
@@ -9,7 +9,7 @@ REM Contents:
 REM   install.bat                        (from windows-dist/)
 REM   run-PowerUp-Portal.bat             (from windows-dist/)
 REM   INSTALL.txt                        (from windows-dist/)
-REM   requirements.txt                   (filtered — no pyinstaller)
+REM   requirements.txt                   (filtered - no pyinstaller)
 REM   app\main.py, gui.py, app_config.py, ui_theme.py
 REM   app\workers\
 REM   app\portal\                        (copy of ../portal/)
@@ -19,7 +19,7 @@ REM       credentials.json               (MUST exist in desktop\resources\)
 REM       .env                           (copied from ../portal/.env)
 REM
 REM Zip the result and upload to Google Drive for distribution.
-REM ─────────────────────────────────────────────────────────────
+REM -------------------------------------------------------------
 
 SETLOCAL EnableDelayedExpansion
 cd /d "%~dp0"
@@ -63,7 +63,7 @@ copy /Y "windows-dist\install.bat"            "%OUT%\"                >NUL
 copy /Y "windows-dist\run-PowerUp-Portal.bat" "%OUT%\"                >NUL
 copy /Y "windows-dist\INSTALL.txt"            "%OUT%\"                >NUL
 
-REM --- 4. Filter requirements (drop pyinstaller — users don't build) ---
+REM --- 4. Filter requirements (drop pyinstaller - users don't build) ---
 REM Use findstr directly. Earlier `echo %%L` approach broke spectacularly
 REM because cmd interprets `>=` in `echo customtkinter>=5.2.2` as
 REM redirection, creating files literally named `=5.2.2`.
@@ -85,7 +85,7 @@ xcopy /E /I /Y /Q "workers"      "%APP%\workers"      >NUL
 REM portal_shims/
 xcopy /E /I /Y /Q "portal_shims" "%APP%\portal_shims" >NUL
 
-REM portal/ — copy ONLY the specific files desktop needs. Whitelist rather
+REM portal/ - copy ONLY the specific files desktop needs. Whitelist rather
 REM than blacklist, so stray dev scripts / Streamlit tabs / cached assets
 REM in portal/ never sneak into the distribution.
 mkdir "%APP%\portal" >NUL 2>&1
@@ -94,7 +94,7 @@ copy /Y "..\portal\m3_engine.py" "%APP%\portal\" >NUL
 copy /Y "..\portal\sheets.py"    "%APP%\portal\" >NUL
 copy /Y "..\portal\config.py"    "%APP%\portal\" >NUL
 
-REM resources/ — use powershell for the .env copy because cmd's `copy`
+REM resources/ - use powershell for the .env copy because cmd's `copy`
 REM mis-parses a destination path ending in `\.env` as a glob.
 copy /Y "resources\credentials.json" "%RES%\" >NUL
 powershell -NoProfile -Command "Copy-Item -LiteralPath '..\portal\.env' -Destination '%RES%\.env' -Force"
