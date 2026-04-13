@@ -36,6 +36,12 @@ _backups/
 .DS_Store
 Thumbs.db
 
+# Desktop app build artefacts and local credentials
+desktop/dist/
+desktop/build/
+desktop/.venv/
+desktop/resources/credentials.json
+
 # Misc
 WORKLOG.md
 Test data.xlsx

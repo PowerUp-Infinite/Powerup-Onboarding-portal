@@ -1,0 +1,28 @@
+# PowerUp Portal (desktop) — Python dependencies.
+# Pinned to versions known compatible with python-pptx and PyInstaller.
+
+# ── GUI ───────────────────────────────────────────────────────
+customtkinter>=5.2.2
+
+# ── Google APIs ───────────────────────────────────────────────
+google-auth>=2.29.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.126.0
+
+# ── Data handling ─────────────────────────────────────────────
+# Same pins as portal/requirements.txt. pandas 3 + numpy 2 break python-pptx.
+pandas>=2.2.0,<3.0.0
+numpy>=1.26.0,<2.0.0
+openpyxl>=3.1.2
+
+# ── HTTP ──────────────────────────────────────────────────────
+requests>=2.31.0
+
+# ── M2 / M3 engine deps ──────────────────────────────────────
+matplotlib>=3.8.0
+lxml>=5.2.0
+python-pptx==0.6.23
+python-docx>=1.1.0
+
+# ── Packaging ─────────────────────────────────────────────────
+pyinstaller>=6.6.0
