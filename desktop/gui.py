@@ -18,13 +18,14 @@ import threading
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox
+from typing import Optional
 
 import customtkinter as ctk
 
 # Bootstrap portal + credentials BEFORE any worker imports
 import app_config                                       # noqa: F401
 from workers import common
-from workers import m1_worker, m2_worker, m3_worker
+from workers import m1_worker, m2_worker, m3_worker, agreement_worker
 
 from ui_theme import Color, Font, Space, Radius, BUTTON_H, BUTTON_H_LG, INPUT_H, BANNER_H, STATUS_H
 
@@ -649,6 +650,400 @@ class M3Tab(_BaseTab):
 
 
 # ═══════════════════════════════════════════════════════════════
+# Agreement tab — pure form, no Excel upload
+# ═══════════════════════════════════════════════════════════════
+class AgreementTab(ctk.CTkFrame):
+    """Generates an Elite or Non-Elite agreement DOCX, uploads it as a
+    Google Doc to the agreement output folder, and shows the user a link.
+    Different shape from M1/M2/M3 tabs — no file upload, no client picker.
+    Pure form input + dynamic fee-slab rows."""
+
+    TITLE = "Agreement"
+    SUBTITLE = ("Generate a client agreement (Elite or Non-Elite) with default "
+                "or custom fee slabs.")
+    GENERATE_LABEL = "Generate Agreement"
+
+    def __init__(self, parent, status_cb):
+        super().__init__(parent, fg_color=Color.BG_APP)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self._scroll = ctk.CTkScrollableFrame(
+            self, fg_color=Color.BG_APP, corner_radius=0,
+            scrollbar_button_color=Color.BORDER,
+            scrollbar_button_hover_color=Color.SECONDARY_BORDER,
+        )
+        self._scroll.grid(row=0, column=0, sticky="nsew")
+        self._scroll.grid_columnconfigure(0, weight=1)
+
+        self.status_cb = status_cb
+        self._busy = False
+        self._slab_rows: list[tuple[ctk.CTkEntry, ctk.CTkEntry]] = []
+        self._build_ui()
+
+    def _build_ui(self):
+        s = self._scroll
+
+        # Header
+        header = ctk.CTkFrame(s, fg_color="transparent")
+        header.grid(row=0, column=0, padx=Space.XXL, pady=(Space.XL, Space.MD),
+                    sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header, text=self.TITLE, font=Font.HEADING,
+            text_color=Color.TEXT_PRIMARY, anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(
+            header, text=self.SUBTITLE, font=Font.SUBHEAD,
+            text_color=Color.TEXT_SECONDARY, anchor="w",
+            wraplength=820, justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(Space.XS, 0))
+
+        # Type card — radio between Elite / Non-Elite
+        type_card = Card(s)
+        type_card.grid(row=1, column=0, padx=Space.XXL,
+                       pady=(Space.MD, Space.MD), sticky="ew")
+        type_card.grid_columnconfigure(0, weight=1)
+
+        Label(type_card, text="Agreement type",
+              font=Font.BODY_BOLD).grid(
+            row=0, column=0, padx=Space.LG,
+            pady=(Space.LG, Space.SM), sticky="w",
+        )
+        self.type_var = ctk.StringVar(value="Elite")
+        type_row = ctk.CTkFrame(type_card, fg_color="transparent")
+        type_row.grid(row=1, column=0, padx=Space.LG,
+                      pady=(0, Space.LG), sticky="w")
+        for v, label in (("Elite",     "Elite (PowerUp Infinite)"),
+                         ("Non-Elite", "Non-Elite (UW IA Client Agreement)")):
+            ctk.CTkRadioButton(
+                type_row, text=label, variable=self.type_var, value=v,
+                font=Font.BODY, text_color=Color.TEXT_PRIMARY,
+                fg_color=Color.PRIMARY, hover_color=Color.PRIMARY_HOVER,
+                border_color=Color.SECONDARY_BORDER,
+                command=self._on_type_changed,
+            ).grid(row=0, column=("Elite", "Non-Elite").index(v),
+                   padx=(0, Space.XL), pady=Space.XS, sticky="w")
+
+        # Client details card
+        client_card = Card(s)
+        client_card.grid(row=2, column=0, padx=Space.XXL,
+                         pady=(0, Space.MD), sticky="ew")
+        client_card.grid_columnconfigure(1, weight=1)
+
+        Label(client_card, text="Client details",
+              font=Font.BODY_BOLD).grid(
+            row=0, column=0, columnspan=2, padx=Space.LG,
+            pady=(Space.LG, Space.SM), sticky="w",
+        )
+
+        MutedLabel(client_card, text="Client name").grid(
+            row=1, column=0, padx=(Space.LG, Space.MD),
+            pady=Space.SM, sticky="w",
+        )
+        self.name_entry = TextInput(
+            client_card,
+            placeholder_text="Full name as it should appear on the agreement",
+        )
+        self.name_entry.grid(row=1, column=1, padx=(0, Space.LG),
+                             pady=Space.SM, sticky="ew")
+        self.name_entry.bind("<KeyRelease>", lambda _: self._refresh_state())
+
+        # Email / phone — only when Non-Elite. Slots reserved up-front so
+        # later layout doesn't shuffle.
+        MutedLabel(client_card, text="Email").grid(
+            row=2, column=0, padx=(Space.LG, Space.MD), pady=Space.SM, sticky="w",
+        )
+        self.email_entry = TextInput(
+            client_card, placeholder_text="Client email (or NA to skip)",
+        )
+        self.email_entry.grid(row=2, column=1, padx=(0, Space.LG),
+                              pady=Space.SM, sticky="ew")
+
+        MutedLabel(client_card, text="Phone").grid(
+            row=3, column=0, padx=(Space.LG, Space.MD), pady=Space.SM, sticky="w",
+        )
+        self.phone_entry = TextInput(
+            client_card, placeholder_text="Phone number (or NA to skip)",
+        )
+        self.phone_entry.grid(row=3, column=1, padx=(0, Space.LG),
+                              pady=(Space.SM, Space.LG), sticky="ew")
+
+        # Date — only when Elite
+        self.date_label = MutedLabel(client_card, text="Agreement date")
+        self.date_entry = TextInput(
+            client_card, placeholder_text="YYYY-MM-DD (default: today)",
+        )
+
+        # Fee slabs card
+        slab_card = Card(s)
+        slab_card.grid(row=3, column=0, padx=Space.XXL,
+                       pady=(0, Space.MD), sticky="ew")
+        slab_card.grid_columnconfigure(0, weight=1)
+
+        Label(slab_card, text="Fee slabs",
+              font=Font.BODY_BOLD).grid(
+            row=0, column=0, padx=Space.LG,
+            pady=(Space.LG, Space.SM), sticky="w",
+        )
+
+        self.slab_mode = ctk.StringVar(value="Default")
+        slab_mode_row = ctk.CTkFrame(slab_card, fg_color="transparent")
+        slab_mode_row.grid(row=1, column=0, padx=Space.LG,
+                           pady=(0, Space.SM), sticky="w")
+        for v, label in (("Default", "Default (3 standard slabs)"),
+                         ("Custom",  "Custom")):
+            ctk.CTkRadioButton(
+                slab_mode_row, text=label, variable=self.slab_mode, value=v,
+                font=Font.BODY, text_color=Color.TEXT_PRIMARY,
+                fg_color=Color.PRIMARY, hover_color=Color.PRIMARY_HOVER,
+                border_color=Color.SECONDARY_BORDER,
+                command=self._on_slab_mode_changed,
+            ).grid(row=0, column=("Default", "Custom").index(v),
+                   padx=(0, Space.XL), pady=Space.XS, sticky="w")
+
+        # Custom-slabs sub-area (hidden until Custom is picked)
+        self.custom_frame = ctk.CTkFrame(slab_card, fg_color="transparent")
+        self.custom_frame.grid_columnconfigure(0, weight=1)
+        # not grid'd until Custom mode
+
+        # Inside custom_frame: count selector, dynamic rows, bottom padding
+        self.slab_count_row = ctk.CTkFrame(self.custom_frame, fg_color="transparent")
+        self.slab_count_row.grid(row=0, column=0, padx=Space.LG,
+                                  pady=(Space.SM, Space.SM), sticky="w")
+        MutedLabel(self.slab_count_row, text="Number of slabs").grid(
+            row=0, column=0, padx=(0, Space.MD), sticky="w",
+        )
+        self.slab_count_var = ctk.StringVar(value="1")
+        self.slab_count_dd = Dropdown(
+            self.slab_count_row,
+            values=[str(i) for i in range(1, 11)],
+            command=self._on_slab_count_changed,
+            width=80,
+        )
+        self.slab_count_dd.set("1")
+        self.slab_count_dd.grid(row=0, column=1, sticky="w")
+
+        self.slab_rows_frame = ctk.CTkFrame(self.custom_frame, fg_color="transparent")
+        self.slab_rows_frame.grid(row=1, column=0, padx=Space.LG,
+                                   pady=(0, Space.LG), sticky="ew")
+        self.slab_rows_frame.grid_columnconfigure(0, weight=1)
+        self.slab_rows_frame.grid_columnconfigure(1, weight=1)
+
+        # Generate button
+        self.generate_btn = HeroButton(
+            s, text=self.GENERATE_LABEL, command=self._on_generate_click,
+            state="disabled",
+        )
+        self.generate_btn.grid(row=4, column=0, padx=Space.XXL,
+                               pady=(Space.MD, Space.MD), sticky="ew")
+
+        # Progress + result (same pattern as _BaseTab)
+        self.progress = ctk.CTkProgressBar(
+            s, mode='indeterminate', height=4,
+            progress_color=Color.PRIMARY, fg_color=Color.BORDER,
+            corner_radius=Radius.PILL,
+        )
+        self.result_frame = Card(s)
+        self.result_frame.grid_columnconfigure(0, weight=1)
+
+        # Initial state: Elite is the default → show date row, hide email/phone
+        self._on_type_changed()
+
+    # ── Type / mode changes ───────────────────────────────────
+    def _on_type_changed(self):
+        is_elite = self.type_var.get() == "Elite"
+        # Email + phone rows live at rows 2 and 3 — show or hide them
+        if is_elite:
+            self.email_entry.master.grid_slaves(row=2, column=0)
+            for r in (2, 3):
+                for w in self.email_entry.master.grid_slaves(row=r):
+                    w.grid_remove()
+            self.date_label.grid(row=2, column=0, padx=(Space.LG, Space.MD),
+                                 pady=(Space.SM, Space.LG), sticky="w")
+            self.date_entry.grid(row=2, column=1, padx=(0, Space.LG),
+                                 pady=(Space.SM, Space.LG), sticky="ew")
+        else:
+            self.date_label.grid_remove()
+            self.date_entry.grid_remove()
+            # Re-show email/phone (row 2, 3)
+            for r in (2, 3):
+                for w in self.email_entry.master.grid_slaves(row=r):
+                    if w in (self.date_label, self.date_entry):
+                        continue
+                    w.grid()
+        self._refresh_state()
+
+    def _on_slab_mode_changed(self):
+        if self.slab_mode.get() == "Custom":
+            self.custom_frame.grid(row=2, column=0, sticky="ew")
+            self._on_slab_count_changed(self.slab_count_dd.get())
+        else:
+            self.custom_frame.grid_remove()
+        self._refresh_state()
+
+    def _on_slab_count_changed(self, value: str):
+        try:
+            n = int(value)
+        except ValueError:
+            n = 1
+        # Rebuild the rows
+        for w in self.slab_rows_frame.winfo_children():
+            w.destroy()
+        self._slab_rows = []
+
+        # Header row
+        MutedLabel(self.slab_rows_frame, text="Fee % (e.g. 0.75% p.a.)").grid(
+            row=0, column=0, padx=(0, Space.MD), pady=(Space.SM, Space.XS),
+            sticky="w",
+        )
+        MutedLabel(self.slab_rows_frame, text="AUA range").grid(
+            row=0, column=1, padx=(Space.MD, 0), pady=(Space.SM, Space.XS),
+            sticky="w",
+        )
+
+        for i in range(n):
+            fee = TextInput(self.slab_rows_frame,
+                            placeholder_text="e.g. 0.75% p.a.")
+            fee.grid(row=i + 1, column=0, padx=(0, Space.MD),
+                     pady=Space.XS, sticky="ew")
+            aua = TextInput(self.slab_rows_frame,
+                            placeholder_text="e.g. less than 50 lakhs")
+            aua.grid(row=i + 1, column=1, padx=(Space.MD, 0),
+                     pady=Space.XS, sticky="ew")
+            self._slab_rows.append((fee, aua))
+        self._refresh_state()
+
+    # ── Generate flow ─────────────────────────────────────────
+    def _refresh_state(self):
+        if self._busy:
+            return
+        ok = bool(self.name_entry.get().strip())
+        self.generate_btn.configure(state="normal" if ok else "disabled")
+
+    def _collect_custom_slabs(self) -> Optional[list[dict]]:
+        if self.slab_mode.get() != "Custom":
+            return None
+        slabs = []
+        for fee, aua in self._slab_rows:
+            f, a = fee.get().strip(), aua.get().strip()
+            if not f:
+                continue
+            if "p.a" not in f.lower():
+                f += " p.a."
+            slabs.append({"fee": f, "aua": a})
+        return slabs or None
+
+    def _on_generate_click(self):
+        if self._busy:
+            return
+        self._busy = True
+        self.generate_btn.configure(state="disabled", text="Working…")
+        self._show_progress()
+        self._hide_result()
+
+        is_elite      = self.type_var.get() == "Elite"
+        client_name   = self.name_entry.get().strip()
+        email         = self.email_entry.get().strip() if not is_elite else ""
+        phone         = self.phone_entry.get().strip() if not is_elite else ""
+        date_text     = self.date_entry.get().strip() if is_elite else ""
+        custom_slabs  = self._collect_custom_slabs()
+
+        # Parse the date if provided
+        from datetime import date as _date, datetime as _dt
+        agreement_date = None
+        if is_elite:
+            if date_text:
+                try:
+                    agreement_date = _dt.strptime(date_text, "%Y-%m-%d").date()
+                except ValueError:
+                    pass  # fall through — engine defaults to today
+            if agreement_date is None:
+                agreement_date = _date.today()
+
+        def _work():
+            import traceback as _tb
+            try:
+                result = agreement_worker.generate(
+                    is_elite=is_elite,
+                    client_name=client_name,
+                    email=email,
+                    phone=phone,
+                    agreement_date=agreement_date,
+                    custom_slabs=custom_slabs,
+                )
+            except Exception as e:
+                tb_str = _tb.format_exc()
+                self.after(0, lambda: self._on_failure(str(e), tb_str))
+                return
+            self.after(0, lambda: self._on_success(result))
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_success(self, result: dict):
+        self._busy = False
+        self.generate_btn.configure(text=self.GENERATE_LABEL)
+        self._hide_progress()
+        self._refresh_state()
+        self.status_cb("Done.")
+        self._show_result(result.get('name', 'Done'), result.get('url', ''))
+
+    def _on_failure(self, err: str, tb: str = ""):
+        self._busy = False
+        self.generate_btn.configure(text=self.GENERATE_LABEL)
+        self._hide_progress()
+        self._refresh_state()
+        self.status_cb(f"Failed: {err}")
+        body = err
+        if tb:
+            body += "\n\n─── traceback ───\n" + tb
+        messagebox.showerror("Generation failed", body)
+
+    def _show_progress(self):
+        self.progress.grid(row=5, column=0, padx=Space.XXL,
+                           pady=(0, Space.MD), sticky="ew")
+        self.progress.start()
+
+    def _hide_progress(self):
+        self.progress.stop()
+        self.progress.grid_remove()
+
+    def _show_result(self, title: str, url: str):
+        for w in self.result_frame.winfo_children():
+            w.destroy()
+        self.result_frame.grid(row=6, column=0, padx=Space.XXL,
+                               pady=(Space.SM, Space.XL), sticky="ew")
+        try:
+            self._scroll._parent_canvas.yview_moveto(1.0)
+        except Exception:
+            pass
+
+        ctk.CTkLabel(
+            self.result_frame, text="✓  GENERATED",
+            font=Font.TAG, text_color=Color.SUCCESS,
+            fg_color=Color.SUCCESS_BG, corner_radius=Radius.PILL,
+            padx=Space.MD, pady=Space.XS,
+        ).grid(row=0, column=0, padx=Space.LG,
+               pady=(Space.LG, Space.SM), sticky="w")
+
+        ctk.CTkLabel(
+            self.result_frame, text=title, font=Font.BODY_BOLD,
+            text_color=Color.TEXT_PRIMARY, anchor="w",
+            wraplength=820, justify="left",
+        ).grid(row=1, column=0, padx=Space.LG,
+               pady=(0, Space.MD), sticky="w")
+
+        if url:
+            PrimaryButton(
+                self.result_frame, text="Open in Google Drive",
+                command=lambda: webbrowser.open(url), width=200,
+            ).grid(row=2, column=0, padx=Space.LG,
+                   pady=(0, Space.LG), sticky="w")
+
+    def _hide_result(self):
+        self.result_frame.grid_remove()
+
+
+# ═══════════════════════════════════════════════════════════════
 # Main window
 # ═══════════════════════════════════════════════════════════════
 class App(ctk.CTk):
@@ -718,6 +1113,7 @@ class App(ctk.CTk):
         self.tabview.add("M1 Report")
         self.tabview.add("M2 Deck")
         self.tabview.add("M3 Deck")
+        self.tabview.add("Agreement")
 
         # Status bar — separated from content by a thin top border.
         status_border = ctk.CTkFrame(self, fg_color=Color.BORDER,
@@ -744,10 +1140,11 @@ class App(ctk.CTk):
             text_color=Color.TEXT_SECONDARY, anchor="w",
         ).grid(row=0, column=1, sticky="ew", padx=(0, Space.LG), pady=Space.XS)
 
-        # Mount the three tabs
-        for name, cls in (("M1 Report", M1Tab),
-                          ("M2 Deck",   M2Tab),
-                          ("M3 Deck",   M3Tab)):
+        # Mount the four tabs
+        for name, cls in (("M1 Report",  M1Tab),
+                          ("M2 Deck",    M2Tab),
+                          ("M3 Deck",    M3Tab),
+                          ("Agreement",  AgreementTab)):
             tab = self.tabview.tab(name)
             tab.grid_columnconfigure(0, weight=1)
             tab.grid_rowconfigure(0, weight=1)

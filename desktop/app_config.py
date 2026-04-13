@@ -94,6 +94,9 @@ M1_OUTPUT_FOLDER_ID         = _req('M1_OUTPUT_FOLDER_ID')
 M2_OUTPUT_FOLDER_ID         = _req('M2_OUTPUT_FOLDER_ID')
 M3_OUTPUT_FOLDER_ID         = _req('M3_OUTPUT_FOLDER_ID')
 
+# Agreement automation — used by AgreementTab in gui.py
+AGREEMENT_OUTPUT_FOLDER_ID  = _req('AGREEMENT_OUTPUT_FOLDER_ID')
+
 
 # ── portal/ import bootstrap ──────────────────────────────────
 # The desktop app re-uses portal/m2_engine.py, portal/m3_engine.py and

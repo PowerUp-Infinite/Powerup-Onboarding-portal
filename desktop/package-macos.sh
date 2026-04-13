@@ -77,10 +77,11 @@ cp -r portal_shims "$APP/portal_shims"
 
 # portal/ — whitelist only what's needed
 mkdir -p "$APP/portal"
-cp -f ../portal/m2_engine.py "$APP/portal/"
-cp -f ../portal/m3_engine.py "$APP/portal/"
-cp -f ../portal/sheets.py    "$APP/portal/"
-cp -f ../portal/config.py    "$APP/portal/"
+cp -f ../portal/m2_engine.py        "$APP/portal/"
+cp -f ../portal/m3_engine.py        "$APP/portal/"
+cp -f ../portal/agreement_engine.py "$APP/portal/"
+cp -f ../portal/sheets.py           "$APP/portal/"
+cp -f ../portal/config.py           "$APP/portal/"
 
 # Resources
 cp -f resources/credentials.json "$RES/"

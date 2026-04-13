@@ -89,10 +89,11 @@ REM portal/ - copy ONLY the specific files desktop needs. Whitelist rather
 REM than blacklist, so stray dev scripts / Streamlit tabs / cached assets
 REM in portal/ never sneak into the distribution.
 mkdir "%APP%\portal" >NUL 2>&1
-copy /Y "..\portal\m2_engine.py" "%APP%\portal\" >NUL
-copy /Y "..\portal\m3_engine.py" "%APP%\portal\" >NUL
-copy /Y "..\portal\sheets.py"    "%APP%\portal\" >NUL
-copy /Y "..\portal\config.py"    "%APP%\portal\" >NUL
+copy /Y "..\portal\m2_engine.py"        "%APP%\portal\" >NUL
+copy /Y "..\portal\m3_engine.py"        "%APP%\portal\" >NUL
+copy /Y "..\portal\agreement_engine.py" "%APP%\portal\" >NUL
+copy /Y "..\portal\sheets.py"           "%APP%\portal\" >NUL
+copy /Y "..\portal\config.py"           "%APP%\portal\" >NUL
 
 REM resources/ - use powershell for the .env copy because cmd's `copy`
 REM mis-parses a destination path ending in `\.env` as a glob.
