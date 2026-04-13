@@ -661,24 +661,48 @@ class App(ctk.CTk):
         self.minsize(820, 540)
         self.configure(fg_color=Color.BG_APP)
 
-        self.grid_rowconfigure(1, weight=1)
+        # Row layout:
+        #   0  banner (fixed height)
+        #   1  accent stripe (2px)
+        #   2  tabview (expandable)
+        #   3  status bar (fixed height)
+        self.grid_rowconfigure(2, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        # Top banner — deep navy, white text
+        # Top banner — near-black with a subtle violet accent stripe under it.
         banner = ctk.CTkFrame(
             self, fg_color=Color.BG_BANNER, corner_radius=0, height=BANNER_H,
         )
         banner.grid(row=0, column=0, sticky="ew")
         banner.grid_columnconfigure(0, weight=1)
         banner.grid_propagate(False)
+
+        # Logo dot + wordmark — more "branded" than plain text.
+        logo_row = ctk.CTkFrame(banner, fg_color="transparent")
+        logo_row.grid(row=0, column=0, padx=Space.XXL, pady=Space.MD, sticky="w")
         ctk.CTkLabel(
-            banner, text="PowerUp  Portal", font=Font.TITLE,
+            logo_row, text="●", font=(Font.TITLE[0], 22, "bold"),
+            text_color=Color.PRIMARY, anchor="w",
+        ).grid(row=0, column=0, padx=(0, Space.SM))
+        ctk.CTkLabel(
+            logo_row, text="PowerUp Portal", font=Font.TITLE,
             text_color=Color.TEXT_ON_DARK, anchor="w",
-        ).grid(row=0, column=0, padx=Space.XXL, pady=Space.LG, sticky="w")
-        ctk.CTkLabel(
-            banner, text="LOCAL  ·  v1", font=Font.SMALL,
-            text_color="#94A3B8", anchor="e",
-        ).grid(row=0, column=1, padx=Space.XXL, pady=Space.LG, sticky="e")
+        ).grid(row=0, column=1, sticky="w")
+
+        # Right-side meta tag
+        meta = ctk.CTkLabel(
+            banner, text="LOCAL  ·  v1", font=Font.TAG,
+            text_color="#7A7A8A", anchor="e",
+            fg_color="#1A1A22", corner_radius=Radius.PILL,
+            padx=Space.MD, pady=Space.XS,
+        )
+        meta.grid(row=0, column=1, padx=Space.XXL, pady=Space.MD, sticky="e")
+
+        # 1px violet accent stripe below the banner
+        accent = ctk.CTkFrame(self, fg_color=Color.PRIMARY,
+                              corner_radius=0, height=2)
+        accent.grid(row=1, column=0, sticky="ew")
+        accent.grid_propagate(False)
 
         # Tabview — customtkinter's default is fine once we theme the segment
         self.tabview = ctk.CTkTabview(
@@ -690,23 +714,35 @@ class App(ctk.CTk):
             segmented_button_unselected_hover_color=Color.BORDER,
             text_color=Color.TEXT_PRIMARY,
         )
-        self.tabview.grid(row=1, column=0, padx=0, pady=0, sticky="nsew")
+        self.tabview.grid(row=2, column=0, padx=0, pady=0, sticky="nsew")
         self.tabview.add("M1 Report")
         self.tabview.add("M2 Deck")
         self.tabview.add("M3 Deck")
 
-        # Status bar
+        # Status bar — separated from content by a thin top border.
+        status_border = ctk.CTkFrame(self, fg_color=Color.BORDER,
+                                     corner_radius=0, height=1)
+        status_border.grid(row=3, column=0, sticky="ew")
+
         status_frame = ctk.CTkFrame(
             self, fg_color=Color.BG_SUBTLE, corner_radius=0, height=STATUS_H,
         )
-        status_frame.grid(row=2, column=0, sticky="ew")
-        status_frame.grid_columnconfigure(0, weight=1)
+        status_frame.grid(row=4, column=0, sticky="ew")
+        status_frame.grid_columnconfigure(1, weight=1)
         status_frame.grid_propagate(False)
+
+        # Subtle bullet that gets coloured per-state could go here later;
+        # for now, a static muted dot reads as a "status indicator".
+        ctk.CTkLabel(
+            status_frame, text="●", font=(Font.SMALL[0], 9),
+            text_color=Color.TEXT_MUTED,
+        ).grid(row=0, column=0, padx=(Space.LG, Space.SM), pady=Space.XS, sticky="w")
+
         self.status_var = ctk.StringVar(value="Ready.")
         ctk.CTkLabel(
             status_frame, textvariable=self.status_var, font=Font.SMALL,
             text_color=Color.TEXT_SECONDARY, anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=Space.LG, pady=Space.XS)
+        ).grid(row=0, column=1, sticky="ew", padx=(0, Space.LG), pady=Space.XS)
 
         # Mount the three tabs
         for name, cls in (("M1 Report", M1Tab),

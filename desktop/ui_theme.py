@@ -14,44 +14,47 @@ import platform
 
 
 # ── Colors ────────────────────────────────────────────────────
-# Tailwind CSS slate/indigo/emerald families — well-tested in real apps.
+# Light theme inspired by Linear / Vercel — warm-tinted whites, soft
+# violet primary, very subtle borders. Goal: feels premium without
+# leaving Tk's rendering envelope.
 class Color:
-    # Backgrounds
-    BG_APP       = "#F1F5F9"   # slate-100 — window background
-    BG_BANNER    = "#0F172A"   # slate-900 — top banner (deep navy)
-    BG_CARD      = "#FFFFFF"   # pure white — cards float above the bg
+    # Backgrounds — a touch warmer than pure slate, less "Bootstrap-ey"
+    BG_APP       = "#FAFAFB"   # warm off-white window background
+    BG_BANNER    = "#0B0B12"   # near-black with a hint of violet
+    BG_CARD      = "#FFFFFF"   # pure white cards float above bg
     BG_INPUT     = "#FFFFFF"
-    BG_SUBTLE    = "#F8FAFC"   # slate-50  — for inline highlights
+    BG_SUBTLE    = "#F4F4F7"   # for inline highlights / hover surfaces
 
-    # Borders
-    BORDER       = "#E2E8F0"   # slate-200 — subtle card borders
-    BORDER_FOCUS = "#C7D2FE"   # indigo-200 — when something's focused
+    # Borders — softer, more subtle than slate-200
+    BORDER       = "#EAEAEF"   # default card/input border
+    BORDER_HOVER = "#D8D8E0"   # slightly stronger on hover
+    BORDER_FOCUS = "#C7C2F4"   # violet-tinted when focused
 
     # Text
-    TEXT_PRIMARY   = "#0F172A"   # slate-900 — headings, values
-    TEXT_SECONDARY = "#475569"   # slate-600 — subtitles, field labels
-    TEXT_MUTED     = "#94A3B8"   # slate-400 — placeholders, meta info
+    TEXT_PRIMARY   = "#0B0B12"   # near-black headings/values
+    TEXT_SECONDARY = "#4B4B58"   # body text
+    TEXT_MUTED     = "#8E8E9A"   # placeholders, meta, captions
     TEXT_ON_DARK   = "#FFFFFF"
-    TEXT_LINK      = "#4F46E5"   # indigo-600
+    TEXT_LINK      = "#5B5BD6"
 
-    # Primary action — deep indigo
-    PRIMARY         = "#4F46E5"   # indigo-600
-    PRIMARY_HOVER   = "#4338CA"   # indigo-700
-    PRIMARY_PRESSED = "#3730A3"   # indigo-800
-    PRIMARY_DISABLED = "#C7D2FE"  # indigo-200
+    # Primary action — soft violet (Linear-style), warmer than indigo-600
+    PRIMARY         = "#5B5BD6"
+    PRIMARY_HOVER   = "#4848C2"
+    PRIMARY_PRESSED = "#3C3CA8"
+    PRIMARY_DISABLED = "#C9C9F0"
 
     # Secondary (ghost / outline button)
     SECONDARY        = "#FFFFFF"
-    SECONDARY_HOVER  = "#F1F5F9"
-    SECONDARY_BORDER = "#CBD5E1"   # slate-300
+    SECONDARY_HOVER  = "#F4F4F7"
+    SECONDARY_BORDER = "#D8D8E0"
 
-    # Semantic
-    SUCCESS      = "#059669"   # emerald-600
-    SUCCESS_BG   = "#ECFDF5"   # emerald-50
-    WARNING      = "#D97706"   # amber-600
-    WARNING_BG   = "#FFFBEB"   # amber-50
-    ERROR        = "#DC2626"   # red-600
-    ERROR_BG     = "#FEF2F2"   # red-50
+    # Semantic — slightly desaturated for a calmer feel
+    SUCCESS      = "#10A37F"   # softer emerald
+    SUCCESS_BG   = "#E8F8F2"
+    WARNING      = "#D97706"
+    WARNING_BG   = "#FFF8EE"
+    ERROR        = "#DC2626"
+    ERROR_BG     = "#FEF1F1"
 
 
 # ── Fonts ─────────────────────────────────────────────────────
@@ -70,16 +73,16 @@ _F = _system_font()
 
 
 class Font:
-    TITLE      = (_F, 22, "bold")    # top banner
-    HEADING    = (_F, 18, "bold")    # tab section title
+    TITLE      = (_F, 20, "bold")    # top banner
+    HEADING    = (_F, 22, "bold")    # tab section title — more visual weight
     SUBHEAD    = (_F, 13)            # tab subtitle (muted)
     BODY       = (_F, 13)
     BODY_BOLD  = (_F, 13, "bold")
-    BUTTON     = (_F, 14, "bold")
-    BUTTON_LG  = (_F, 15, "bold")
+    BUTTON     = (_F, 13, "bold")
+    BUTTON_LG  = (_F, 14, "bold")
     LABEL      = (_F, 12)
     SMALL      = (_F, 11)
-    TAG        = (_F, 11, "bold")    # for pill badges
+    TAG        = (_F, 10, "bold")    # for pill badges (smaller, tighter)
 
 
 # ── Spacing scale ─────────────────────────────────────────────
@@ -95,18 +98,20 @@ class Space:
 
 
 # ── Radii ─────────────────────────────────────────────────────
+# Slightly larger radii than v1 — Linear/Vercel use 8–12 for inputs and
+# 14–16 for cards. Reads as more "premium" without going full pill.
 class Radius:
-    SM     = 6
-    MD     = 10
-    LG     = 14
-    BUTTON = 10
-    CARD   = 12
+    SM     = 8
+    MD     = 12
+    LG     = 16
+    BUTTON = 12
+    CARD   = 14
     PILL   = 999
 
 
 # ── Geometry ──────────────────────────────────────────────────
-BUTTON_H       = 44
-BUTTON_H_LG    = 54   # hero "Generate" button
-INPUT_H        = 40
-BANNER_H       = 72
-STATUS_H       = 32
+BUTTON_H       = 42
+BUTTON_H_LG    = 56   # hero "Generate" button — slightly taller, more confident
+INPUT_H        = 42
+BANNER_H       = 64   # tighter banner — less navy, more content
+STATUS_H       = 30
