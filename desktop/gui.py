@@ -815,9 +815,10 @@ class AgreementTab(ctk.CTkFrame):
             row=0, column=0, padx=(0, Space.MD), sticky="w",
         )
         self.slab_count_var = ctk.StringVar(value="1")
+        # Max 3 slabs — agreements never have more than 3 fee tiers.
         self.slab_count_dd = Dropdown(
             self.slab_count_row,
-            values=[str(i) for i in range(1, 11)],
+            values=["1", "2", "3"],
             command=self._on_slab_count_changed,
             width=80,
         )
