@@ -873,7 +873,11 @@ def do_slide4(prs, pf, rg_agg, risk_profile):
         return best
 
     def _fmt_pct_for_slide(val):
-        """0.96 -> '96%'  ;  96.0 -> '96%'  ;  None / NaN -> '-'."""
+        """0.96 -> '96%'  ;  96 -> '96%'  ;  1 -> '1%'  ;  None/NaN -> '-'.
+
+        Disambiguation: STRICTLY less than 1 means fraction (0.85 = 85%).
+        1 or above means it's already a percentage integer (1 = 1%, 99 =
+        99%). Treating 1 as 100% would mis-classify rows like Demat=1."""
         if val is None or (isinstance(val, float) and pd.isna(val)):
             return '-'
         try:
@@ -881,8 +885,7 @@ def do_slide4(prs, pf, rg_agg, risk_profile):
         except (TypeError, ValueError):
             s = str(val).strip()
             return s if s else '-'
-        # Stored as fraction (0.0–1.0) → multiply; stored as % (e.g. 96) → keep
-        if 0 <= f <= 1.0:
+        if 0 < f < 1:
             f *= 100
         return f'{int(round(f))}%'
 
