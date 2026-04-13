@@ -1,0 +1,95 @@
+┌──────────────────────────────────────────────────────────┐
+│   PowerUp Portal -- macOS first-time setup               │
+│   Read this BEFORE you double-click anything.            │
+└──────────────────────────────────────────────────────────┘
+
+macOS blocks unsigned scripts downloaded from the internet
+("Apple could not verify..."). You'll see this dialog the
+FIRST time you try to open install.command. This is normal
+and expected.
+
+There are two ways to get past it. The TERMINAL way is
+faster (10 seconds, ONE command). The SETTINGS way uses
+the GUI but takes more clicks.
+
+
+
+================================================================
+THE TERMINAL WAY (recommended -- 10 seconds)
+================================================================
+
+1. Open Terminal:
+      Press   Cmd + Space
+      Type    Terminal
+      Hit     Enter
+
+2. Drag the WHOLE FOLDER (PowerUp-Portal-Mac) from Finder
+   into the Terminal window. The folder's path appears.
+
+3. Replace what you see with this exact command (you can
+   copy it from this file):
+
+      xattr -dr com.apple.quarantine ~/Downloads/PowerUp-Portal-Mac
+
+   (If the folder is somewhere else, change the path. Drag
+   the folder from Finder onto Terminal to get the right path.)
+
+4. Press Enter. The command runs silently. Done.
+
+5. Now double-click   install.command   in Finder. It works.
+
+
+
+================================================================
+THE SETTINGS WAY (no Terminal, but more clicks)
+================================================================
+
+1. Double-click install.command. The "Apple could not verify"
+   dialog appears. Click   Done.
+
+2. Open System Settings:
+      Click the Apple logo (top-left)
+      Click   System Settings
+      Click   Privacy & Security   (left sidebar)
+      Scroll down to the "Security" section
+
+3. You'll see:
+      "install.command was blocked from use because it is
+      not from an identified developer."
+   Click the   Open Anyway   button next to that message.
+
+4. macOS asks you to authenticate (Touch ID or password). Do it.
+
+5. The script now runs. From this point on, double-clicks
+   work normally for both install.command AND
+   run-PowerUp-Portal.command.
+
+
+
+================================================================
+WHAT HAPPENS DURING SETUP
+================================================================
+
+install.command will:
+   1. Look for Python 3.9+ on your Mac. If found, use it.
+   2. If missing, install Python 3.11 from the bundled
+      python-3.11.9-macos11.pkg (you'll be prompted for your
+      Mac password).
+   3. Create a private .venv/ folder with all required libraries.
+   4. Strip the quarantine attribute from run-PowerUp-Portal.command
+      so DAILY USE doesn't hit the Gatekeeper dialog.
+
+When you see "Setup complete!", close the Terminal window.
+
+
+
+================================================================
+DAILY USE (after first-time setup)
+================================================================
+
+Just double-click   run-PowerUp-Portal.command   in Finder.
+
+The PowerUp Portal window opens with 4 tabs:
+   M1 Report  /  M2 Deck  /  M3 Deck  /  Agreement
+
+Use as needed.

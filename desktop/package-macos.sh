@@ -55,7 +55,8 @@ rm -rf "$OUT"
 mkdir -p "$APP" "$RES"
 
 # --- 3. Copy template files ---
-echo "[3/6] Copying launcher scripts and bundled Python installer..."
+echo "[3/6] Copying launcher scripts, bundled Python installer, and read-me..."
+cp -f macos-dist/READ-ME-FIRST.txt           "$OUT/"
 cp -f macos-dist/install.command             "$OUT/"
 cp -f macos-dist/run-PowerUp-Portal.command  "$OUT/"
 cp -f macos-dist/INSTALL.txt                 "$OUT/"

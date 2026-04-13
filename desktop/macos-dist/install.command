@@ -72,11 +72,20 @@ echo "[4/4] Installing dependencies. Takes ~1-2 min on first run..."
 # Make the launcher executable (zip extraction sometimes strips +x)
 chmod +x ./run-PowerUp-Portal.command 2>/dev/null || true
 
+# Strip macOS quarantine attribute from the launcher and the rest of the
+# folder so daily use does NOT hit the "Apple could not verify..." dialog
+# again. We can do this safely now -- the user has already trusted this
+# install by running it, so trusting the sibling files is fine.
+echo "       Removing Gatekeeper quarantine on bundled files..."
+xattr -dr com.apple.quarantine . 2>/dev/null || true
+
 echo
 echo "========================================"
 echo "  Setup complete!"
 echo "========================================"
 echo
-echo "Double-click   run-PowerUp-Portal.command   to start the app."
-echo "First time only: right-click -> Open -> Open, to bypass Gatekeeper."
+echo "Daily use: double-click   run-PowerUp-Portal.command"
+echo
+echo "(No more Gatekeeper dialogs -- this script just removed the"
+echo " quarantine flag from every file in this folder.)"
 echo
