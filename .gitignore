@@ -41,6 +41,7 @@ desktop/dist/
 desktop/build/
 desktop/.venv/
 desktop/resources/credentials.json
+desktop/resources/.env
 
 # Misc
 WORKLOG.md

@@ -237,10 +237,12 @@ class _BaseTab(ctk.CTkFrame):
         self._hide_result()
 
         def _work():
+            import traceback as _tb
             try:
                 result = self._run_generation()
             except Exception as e:
-                self.after(0, lambda: self._on_failure(str(e)))
+                tb_str = _tb.format_exc()
+                self.after(0, lambda: self._on_failure(str(e), tb_str))
                 return
             self.after(0, lambda: self._on_success(result))
 
@@ -253,12 +255,17 @@ class _BaseTab(ctk.CTkFrame):
         self.status_cb("Done. ✅")
         self._show_result(result.get('name', 'Done'), result.get('url', ''))
 
-    def _on_failure(self, err: str):
+    def _on_failure(self, err: str, tb: str = ""):
         self._busy = False
         self.generate_btn.configure(text=self.GENERATE_LABEL)
         self._update_generate_state()
         self.status_cb(f"Failed: {err}")
-        messagebox.showerror("Generation failed", err)
+        # Show full traceback in the error dialog so the user can screenshot
+        # it and share with us — str(e) alone is rarely enough to debug.
+        body = err
+        if tb:
+            body += "\n\n─── traceback ───\n" + tb
+        messagebox.showerror("Generation failed", body)
 
     def _show_result(self, title: str, url: str):
         for w in self.result_frame.winfo_children():
@@ -304,42 +311,155 @@ class M1Tab(_BaseTab):
 class M2Tab(_BaseTab):
     TITLE    = "M2 — Strategy Deck"
     SUBTITLE = ("Upload a client Excel and generate their personalised strategy "
-                "deck. Reads data locally; fetches questionnaire response from "
-                "Google Sheets.")
+                "deck. Reads client data locally; fetches questionnaire response "
+                "from Google Sheets.")
     GENERATE_LABEL = "⚙️  Generate M2 Deck"
 
+    _Q_AUTO = "(auto-match by name)"
+    _Q_LOADING = "(loading questionnaire...)"
+    _Q_FAILED = "(fetch failed — see status)"
+
     def _build_extra(self, parent):
-        # Optional questionnaire-name picker
-        ctk.CTkLabel(parent, text="Questionnaire response (optional):",
-                     font=FONT_BODY).grid(row=0, column=0, padx=(0, 10), sticky="w")
+        parent.grid_columnconfigure(1, weight=1)
+
+        # Row 0: label + dropdown
+        ctk.CTkLabel(parent, text="Questionnaire response:",
+                     font=FONT_BODY).grid(row=0, column=0, padx=(0, 10),
+                                          sticky="w")
         self.q_dropdown = ctk.CTkOptionMenu(
-            parent, values=["(auto-match by name)"],
-            font=FONT_BODY, height=40, dynamic_resizing=False,
-            command=lambda _: self._update_generate_state(),
+            parent, values=[self._Q_LOADING],
+            font=FONT_BODY, height=40, dynamic_resizing=False, width=400,
+            command=self._on_q_selected,
         )
-        self.q_dropdown.set("(auto-match by name)")
+        self.q_dropdown.set(self._Q_LOADING)
         self.q_dropdown.grid(row=0, column=1, sticky="ew")
 
-        # Load questionnaire names in background
+        # Row 1: live match-status indicator (shows auto-matched name OR error)
+        self.q_match_label = ctk.CTkLabel(
+            parent, text="", font=FONT_SMALL, text_color="#666", anchor="w",
+            wraplength=500, justify="left",
+        )
+        self.q_match_label.grid(row=1, column=1, sticky="ew", pady=(6, 0))
+
+        self._q_names: list[str] = []
+        self._fetch_questionnaire_names()
+
+    def _fetch_questionnaire_names(self) -> None:
+        """Background fetch of all Name values in the questionnaire sheet."""
         def _work():
             try:
                 qdf = common.fetch_questionnaire()
-                names = []
-                if not qdf.empty:
-                    name_col = next((c for c in qdf.columns if c.lower() == "name"), None)
-                    if name_col:
-                        names = sorted(set(
-                            str(n).strip() for n in qdf[name_col]
-                            if str(n).strip() and str(n).strip().lower() != 'nan'
-                        ))
-            except Exception:
-                names = []
-            self.after(0, lambda: self._on_q_loaded(names))
+                if qdf.empty:
+                    self.after(0, lambda: self._on_q_loaded(
+                        [], "Questionnaire sheet is empty."))
+                    return
+                name_col = next((c for c in qdf.columns
+                                 if c.lower() == "name"), None)
+                if not name_col:
+                    self.after(0, lambda: self._on_q_loaded(
+                        [], "Questionnaire sheet has no 'Name' column."))
+                    return
+                names = sorted(set(
+                    str(n).strip() for n in qdf[name_col]
+                    if str(n).strip() and str(n).strip().lower() != 'nan'
+                ))
+                self.after(0, lambda: self._on_q_loaded(names, None))
+            except Exception as e:
+                err = f"Could not fetch questionnaire: {type(e).__name__}: {e}"
+                self.after(0, lambda: self._on_q_loaded([], err))
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def _on_q_loaded(self, names: list[str]):
-        self.q_dropdown.configure(values=["(auto-match by name)"] + names)
+    def _on_q_loaded(self, names: list[str], err: str | None):
+        self._q_names = names
+        if err or not names:
+            self.q_dropdown.configure(values=[self._Q_FAILED])
+            self.q_dropdown.set(self._Q_FAILED)
+            self.q_match_label.configure(
+                text=err or "No questionnaire responses found.",
+                text_color="#cc0000",
+            )
+            self.status_cb(err or "No questionnaire responses found.")
+        else:
+            self.q_dropdown.configure(values=[self._Q_AUTO] + names)
+            self.q_dropdown.set(self._Q_AUTO)
+            self.q_match_label.configure(
+                text=f"{len(names)} responses loaded from Google Sheets.",
+                text_color="#666",
+            )
+            self.status_cb(f"Loaded {len(names)} questionnaire responses.")
+        self._update_match_preview()
+
+    def _on_q_selected(self, _value: str) -> None:
+        self._update_match_preview()
+        self._update_generate_state()
+
+    # Override so the match preview refreshes whenever the client changes.
+    def _on_client_changed(self, display_name: str):
+        super()._on_client_changed(display_name)
+        self._update_match_preview()
+
+    def _parse_done(self, clients):
+        super()._parse_done(clients)
+        self._update_match_preview()
+
+    def _update_match_preview(self) -> None:
+        """Show next to the dropdown which questionnaire row will actually
+        be used for the currently-selected client."""
+        if not hasattr(self, 'q_match_label'):
+            return
+        if not self._q_names:
+            return  # loaded state; error already shown
+
+        selected = self.q_dropdown.get()
+        client_name = next(
+            (n for pid, n in self.clients if pid == self.selected_pf_id),
+            None,
+        )
+
+        if selected and selected != self._Q_AUTO and selected not in (
+                self._Q_LOADING, self._Q_FAILED):
+            # Manual choice
+            self.q_match_label.configure(
+                text=f"✓ Using: {selected}", text_color="#2a9c4a",
+            )
+            return
+
+        if not client_name:
+            self.q_match_label.configure(
+                text="Upload an Excel and pick a client to see the auto-match.",
+                text_color="#666",
+            )
+            return
+
+        # Auto-match by fuzzy similarity
+        from difflib import SequenceMatcher
+        cl = client_name.lower().strip()
+        best, score = None, 0.0
+        for n in self._q_names:
+            s = SequenceMatcher(None, cl, n.lower().strip()).ratio()
+            if s > score:
+                score, best = s, n
+
+        if best and score >= 0.5:
+            pct = int(round(score * 100))
+            self.q_match_label.configure(
+                text=f"✓ Auto-matched: {best}   ({pct}% similarity)",
+                text_color="#2a9c4a",
+            )
+        elif best and score >= 0.3:
+            pct = int(round(score * 100))
+            self.q_match_label.configure(
+                text=(f"⚠ Weak auto-match: {best}  ({pct}% similarity). "
+                      f"Pick the correct response from the dropdown if this is wrong."),
+                text_color="#cc8800",
+            )
+        else:
+            self.q_match_label.configure(
+                text=(f"✗ No match for '{client_name}'. "
+                      f"Pick the correct response from the dropdown above."),
+                text_color="#cc0000",
+            )
 
     def _run_generation(self) -> dict:
         assert self.xlsx_path and self.selected_pf_id
@@ -348,9 +468,15 @@ class M2Tab(_BaseTab):
             (n for pid, n in self.clients if pid == self.selected_pf_id),
             self.selected_pf_id,
         )
-        q_name = self.q_dropdown.get()
-        if q_name == "(auto-match by name)":
+        # If the user explicitly picked a questionnaire response, pass that
+        # name through so generate_deck matches the exact row. Otherwise
+        # leave it None and generate_deck falls back to fuzzy matching on
+        # the customer_name.
+        selected = self.q_dropdown.get()
+        if selected in (self._Q_AUTO, self._Q_LOADING, self._Q_FAILED):
             q_name = None
+        else:
+            q_name = selected
         return m2_worker.generate(
             self.xlsx_path, self.selected_pf_id, customer_name,
             questionnaire_name=q_name,
