@@ -99,15 +99,26 @@ M3_OUTPUT_FOLDER_ID         = _req('M3_OUTPUT_FOLDER_ID')
 # The desktop app re-uses portal/m2_engine.py, portal/m3_engine.py and
 # portal/sheets.py directly. Those modules are flat scripts that import each
 # other by bare name (e.g. `from google_auth import ...`), so we add portal/
-# to sys.path whether running from source or from a bundle.
+# to sys.path.
+#
+# BEFORE portal/ we insert desktop/portal_shims/, which holds a streamlit-free
+# replacement for google_auth.py. When portal/sheets.py does
+# `from google_auth import get_sheets_service`, Python resolves to the shim,
+# NOT to portal/google_auth.py which imports streamlit. That's how we keep
+# the desktop bundle free of streamlit entirely.
 def _prepare_portal_imports() -> None:
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        # PyInstaller extracts portal/ alongside desktop/
-        portal_path = os.path.join(sys._MEIPASS, 'portal')  # type: ignore[attr-defined]
+        meipass = sys._MEIPASS  # type: ignore[attr-defined]
+        portal_path = os.path.join(meipass, 'portal')
+        shims_path  = os.path.join(meipass, 'portal_shims')
     else:
         portal_path = str(repo_root() / 'portal')
-    if portal_path not in sys.path:
-        sys.path.insert(0, portal_path)
+        shims_path  = str(Path(__file__).resolve().parent / 'portal_shims')
+
+    # shims LAST in the insert order means FIRST on sys.path.
+    for path in (portal_path, shims_path):
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
 
 _prepare_portal_imports()

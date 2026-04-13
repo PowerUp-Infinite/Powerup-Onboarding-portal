@@ -23,11 +23,14 @@ block_cipher = None
 
 # ── Files to bundle alongside the Python code ────────────────
 datas = [
-    # Credentials + icons → resources/ inside the bundle
-    (os.path.join(DESKTOP_DIR, 'resources'), 'resources'),
-    # Whole portal/ folder → portal/ inside the bundle. config.py adds this
-    # to sys.path at runtime.
-    (os.path.join(REPO_ROOT, 'portal'),      'portal'),
+    # Credentials + icons + env → resources/ inside the bundle
+    (os.path.join(DESKTOP_DIR, 'resources'),     'resources'),
+    # Whole portal/ folder → portal/ inside the bundle. app_config.py adds
+    # this to sys.path at runtime so `from m2_engine import ...` works.
+    (os.path.join(REPO_ROOT,   'portal'),        'portal'),
+    # Shim folder that shadows portal/google_auth.py with a streamlit-free
+    # version. app_config.py inserts this BEFORE portal/ on sys.path.
+    (os.path.join(DESKTOP_DIR, 'portal_shims'),  'portal_shims'),
 ]
 
 # matplotlib ships data files PyInstaller won't auto-detect
@@ -64,7 +67,18 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tests', 'pytest'],
+    # streamlit is only used by portal/google_auth.py (which we shadow via
+    # portal_shims/google_auth.py). Excluding it shaves ~50 MB off the bundle
+    # AND avoids the "No package metadata was found for streamlit" crash
+    # that happens when PyInstaller includes streamlit but drops its
+    # metadata. Related deps (altair, pyarrow, pydeck, tornado, watchdog)
+    # come in transitively via streamlit — drop them too.
+    excludes=[
+        'tests', 'pytest',
+        'streamlit', 'altair', 'pyarrow', 'pydeck',
+        'tornado', 'watchdog', 'blinker', 'click',
+        'gitpython', 'rich',
+    ],
     noarchive=False,
     optimize=0,
 )
