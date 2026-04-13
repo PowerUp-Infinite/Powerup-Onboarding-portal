@@ -578,11 +578,20 @@ def do_slide2(prs, first_name):
 # SLIDE 3 — You at a Glance
 # ──────────────────────────────────────────────────────────────
 
-def do_slide3(prs, q_row, risk_profile):
+def do_slide3(prs, q_row, risk_profile, pf_row=None):
     slide   = prs.slides[2]
     goals   = parse_goals(q_row.get('Goals', ''))
     horizon = get_horizon(q_row.get('Investment Horizon', ''))
-    age     = q_row.get('Age', '')
+    # Age preference order:
+    #   1. PF_level.Age (authoritative — set by the data team)
+    #   2. Questionnaire 'Age' field (fallback for old workflow)
+    age = ''
+    if pf_row is not None and not (hasattr(pf_row, 'empty') and pf_row.empty):
+        v = pf_row.get('Age')
+        if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip():
+            age = str(v).strip()
+    if not age:
+        age = q_row.get('Age', '') or ''
 
     lump_val  = q_row.get('Lumpsum Amount (with Infinite)', 0)
     sip_val   = q_row.get('Monthly SIP Amount (with Infinite)', 0)
@@ -835,6 +844,69 @@ def do_slide4(prs, pf, rg_agg, risk_profile):
         if risk_val_sh is not None:
             replace_text(risk_val_sh, pf_risk)
             print(f"  Slide 4: portfolio risk (S+M={sm:.0f}%) -> '{pf_risk}'")
+
+    # SOA % and Demat % — these labels live in a smaller-font row at the
+    # bottom-left of the slide. The value shapes underneath them are also
+    # smaller font (≈101350 EMU) so _value_below() (which only looks at
+    # values >= 200000 EMU) won't find them. Search by exact label text +
+    # nearest "%" shape directly below in the same column.
+    def _pct_value_below(label_shape):
+        """Find any text shape containing '%' below `label_shape` in the
+        same column. Used for SOA / Demat values which are smaller-font
+        than the main metric values."""
+        if label_shape is None:
+            return None
+        lL, lT, lW = label_shape.left, label_shape.top, label_shape.width
+        best, best_dy = None, 1 << 30
+        for s in text_shapes:
+            if s is label_shape:
+                continue
+            if not s.text_frame.text.strip().endswith('%'):
+                continue
+            if s.top <= lT:
+                continue
+            if s.left > lL + lW or s.left + s.width < lL:
+                continue
+            dy = s.top - lT
+            if dy < best_dy and dy < 400000:
+                best_dy, best = dy, s
+        return best
+
+    def _fmt_pct_for_slide(val):
+        """0.96 -> '96%'  ;  96.0 -> '96%'  ;  None / NaN -> '-'."""
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return '-'
+        try:
+            f = float(val)
+        except (TypeError, ValueError):
+            s = str(val).strip()
+            return s if s else '-'
+        # Stored as fraction (0.0–1.0) → multiply; stored as % (e.g. 96) → keep
+        if 0 <= f <= 1.0:
+            f *= 100
+        return f'{int(round(f))}%'
+
+    soa_val   = pf.get('SOA%') if hasattr(pf, 'get') else None
+    demat_val = pf.get('Demat%') if hasattr(pf, 'get') else None
+
+    for label_text, raw, kind in (('SOA', soa_val, 'soa'),
+                                  ('Demat', demat_val, 'demat')):
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+            continue   # column missing/empty — leave template default
+        # Iterate ALL text shapes (not just `labels`) since "SOA"/"Demat"
+        # labels are sz=133350 and live in our `labels` set anyway.
+        lbl = None
+        for s in text_shapes:
+            if s.text_frame.text.strip() == label_text:
+                lbl = s; break
+        if lbl is None:
+            print(f"  Slide 4: WARN {label_text} label not found"); continue
+        val_sh = _pct_value_below(lbl)
+        if val_sh is None:
+            print(f"  Slide 4: WARN {label_text} value shape not found"); continue
+        new_text = _fmt_pct_for_slide(raw)
+        replace_text(val_sh, new_text)
+        print(f"  Slide 4: {label_text} -> {new_text}")
 
     # Gains + S+M + match/no-match — match by existing text content
     match_text   = "Matches your risk profile"
@@ -2810,7 +2882,7 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None):
 
     print("[5/9] Slide 3 - You at a Glance")
     if not q_row.empty:
-        do_slide3(prs, q_row, risk_profile)
+        do_slide3(prs, q_row, risk_profile, pf_row=pf_row)
     else:
         print("  SKIPPED (no questionnaire data)")
 
