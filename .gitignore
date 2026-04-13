@@ -51,3 +51,7 @@ desktop/resources/.env
 # Misc
 WORKLOG.md
 Test data.xlsx
+
+# Bundled Python installers (too big for git, fetched by build scripts)
+desktop/windows-dist/python-*-amd64.exe
+desktop/macos-dist/python-*-macos*.pkg

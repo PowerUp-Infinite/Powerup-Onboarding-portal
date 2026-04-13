@@ -1,68 +1,63 @@
-PowerUp Portal — macOS install guide
-=====================================
+PowerUp Portal -- macOS install guide
+======================================
 
-You only need to do this ONCE. After setup, daily use is just a
-double-click on run-PowerUp-Portal.command.
-
-
-Step 1.  Install Python 3.11 (one time, ~3 min)
-------------------------------------------------
-Option A — installer from python.org (recommended for non-developers):
-    1. Open: https://www.python.org/downloads/macos/
-    2. Click the yellow "Download Python 3.11.x" button
-       (pick the "macOS 64-bit universal2 installer")
-    3. Run the .pkg installer, click Continue / Continue / Install
-    4. After it finishes you'll have python3.11 available everywhere.
-
-Option B — Homebrew (if you already use brew):
-    brew install python@3.11
-
-(If you already have Python 3.11 or later, skip this step.)
+Everything you need is in this folder. No separate downloads.
+Two right-clicks total to set up. Daily use is one double-click.
 
 
-Step 2.  Set up PowerUp Portal (one time, ~2 min)
---------------------------------------------------
-1. Extract this folder somewhere on your Mac
-     (e.g. ~/Documents/PowerUp-Portal/)
-2. Open the folder in Finder
-3. ** First time only: ** macOS Gatekeeper will refuse to open the
-   file because it's unsigned. To bypass:
-      • Right-click  install.command
-      • Click  Open
-      • In the warning dialog, click  Open  again
-   macOS remembers this choice — from then on, double-click works.
-4. install.command opens a Terminal window, shows progress, then says
-   "Setup complete!". Wait for it to finish, then close that Terminal.
+Step 1.  First-time setup  (one time, ~3 min)
+----------------------------------------------
+1. ** First time only -- bypass Gatekeeper: **
+      Right-click   install.command
+      Click   Open
+      In the warning dialog, click   Open   again
+   macOS remembers this choice.
+
+2. install.command runs in a Terminal window:
+      * Looks for Python 3.9+ (most modern Macs already have it)
+      * If missing, silently installs Python 3.11 from the bundled
+        python-3.11.9-macos11.pkg  (you'll be prompted for your Mac
+        password)
+      * Creates a private Python environment in .venv/
+      * Downloads required libraries (pandas, customtkinter, etc.)
+
+3. When you see "Setup complete!", close the Terminal.
 
 
-Step 3.  Run the app (every time you want to use it)
-----------------------------------------------------
-Double-click   run-PowerUp-Portal.command
+Step 2.  Run the app  (every time you want to use it)
+------------------------------------------------------
+1. ** First time only -- bypass Gatekeeper for the launcher: **
+      Right-click   run-PowerUp-Portal.command
+      Click   Open
+      In the warning dialog, click   Open   again
+   macOS remembers this choice for this file too.
 
-** First time only: ** Same Gatekeeper bypass as Step 2.4 —
-right-click → Open → Open. Subsequent launches are just a double-click.
+2. From now on, double-click   run-PowerUp-Portal.command
 
 The PowerUp Portal window opens with 4 tabs (M1 / M2 / M3 / Agreement).
 
 
 Troubleshooting
 ---------------
-"command not found: python3" or similar
-    → You missed Step 1. Install Python 3.11 from python.org.
+"Operation not permitted" or "Permission denied"
+   --> The .command files lost their execute bit during zip extraction.
+       Open Terminal, then run:
+            cd ~/Documents/PowerUp-Portal-Mac
+            chmod +x *.command
+       Then double-click again.
 
-"This script cannot be opened because it is from an unidentified developer"
-    → Right-click the .command file → Open. Click Open in the prompt.
-      You only need to do this once per install per file.
+Setup says "Installing Python..." then nothing happens
+   --> macOS prompted for your password silently. Look for the password
+       prompt -- it might be hidden behind Terminal. Type your Mac
+       password to allow Python install.
 
-Nothing happens when I double-click
-    → Open Terminal (Cmd+Space → "Terminal"), then run:
-        chmod +x ~/Documents/PowerUp-Portal/*.command
-        chmod +x ~/Documents/PowerUp-Portal/*.sh 2>/dev/null
-      Then try double-clicking again.
+Setup fails -- can't install Python
+   --> Double-click python-3.11.9-macos11.pkg yourself, click through
+       the installer. When done, re-run install.command.
 
 App opens then crashes
-    → A clear error dialog should appear with the full traceback.
-      Screenshot and share with Krutang.
+   --> A clear error dialog appears with the full traceback.
+       Screenshot and share with Krutang.
 
 Anything else
-    → Ping Krutang with a screenshot of the error.
+   --> Ping Krutang with a screenshot.

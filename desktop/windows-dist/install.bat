@@ -2,15 +2,12 @@
 REM =============================================================
 REM PowerUp Portal -- first-time setup [Windows]
 REM
-REM Run this once after downloading the folder. It:
-REM   1. Verifies Python 3.11+ is installed
-REM   2. Creates a virtual environment in .venv\
-REM   3. Installs all dependencies
+REM  1. If Python 3.11 is missing, silently installs it from the
+REM     bundled python-3.11.9-amd64.exe (no separate download needed).
+REM  2. Creates a virtual environment in .venv\
+REM  3. Installs all dependencies into the venv
 REM
-REM Notes:
-REM   * Pure ASCII. cmd in default code page mis-parses UTF-8.
-REM   * No round parentheses inside echo strings - they break
-REM     parenthesized if blocks. Use goto-based flow instead.
+REM  Pure ASCII, CRLF, no parens inside echo strings -- cmd-safe.
 REM =============================================================
 
 SETLOCAL
@@ -23,29 +20,53 @@ echo ========================================
 echo.
 
 REM --- 1. Check Python ---
-echo [1/3] Checking Python installation...
+echo [1/4] Checking Python installation...
 python --version >NUL 2>&1
-if errorlevel 1 goto :no_python
+if errorlevel 1 goto :install_python
+goto :have_python
 
+:install_python
+echo       Python not found. Installing from bundled installer...
+echo       This is silent and takes about 1 minute.
+if not exist "python-3.11.9-amd64.exe" goto :installer_missing
+
+REM Per-user install -- no admin needed. PrependPath puts python on PATH.
+"python-3.11.9-amd64.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0
+if errorlevel 1 goto :py_install_failed
+
+REM Python's installer adds entries to PATH but the current cmd session
+REM doesn't see them until we refresh manually. Add the standard
+REM per-user install location to PATH for THIS session.
+set "PATH=%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts;%PATH%"
+
+REM Verify the install actually worked
+python --version >NUL 2>&1
+if errorlevel 1 goto :py_install_failed
+echo       Python installed successfully.
+
+:have_python
 for /f "tokens=2" %%v in ('python --version 2^>^&1') do set PYVER=%%v
-echo       Found Python %PYVER%.
+echo       Python version: %PYVER%
 
 REM --- 2. Create venv ---
 if exist ".venv\Scripts\python.exe" goto :venv_ready
 
-echo [2/3] Creating virtual environment in .venv\ ...
+echo [2/4] Creating virtual environment in .venv\ ...
 python -m venv .venv
 if errorlevel 1 goto :venv_failed
 goto :venv_done
 
 :venv_ready
-echo [2/3] Virtual environment already exists, reusing it.
+echo [2/4] Virtual environment already exists, reusing it.
 
 :venv_done
 
-REM --- 3. Install dependencies ---
-echo [3/3] Installing dependencies. Takes ~1-2 min on first run...
+REM --- 3. Upgrade pip ---
+echo [3/4] Upgrading pip...
 .venv\Scripts\python.exe -m pip install --upgrade pip --quiet
+
+REM --- 4. Install dependencies ---
+echo [4/4] Installing dependencies. Takes ~1-2 min on first run...
 .venv\Scripts\python.exe -m pip install -r requirements.txt --quiet
 if errorlevel 1 goto :pip_failed
 
@@ -60,17 +81,24 @@ pause
 exit /b 0
 
 
-:no_python
+:installer_missing
 echo.
-echo [ERROR] Python is not installed, or not on PATH.
+echo [ERROR] python-3.11.9-amd64.exe is missing from this folder.
+echo         Re-download the PowerUp-Portal-Windows.zip and try again.
 echo.
-echo Please install Python 3.11 or later from:
-echo     https://www.python.org/downloads/windows/
+pause
+exit /b 1
+
+
+:py_install_failed
 echo.
-echo IMPORTANT: During installation, tick the box
-echo     [x] Add Python to PATH
+echo [ERROR] Could not install Python automatically.
 echo.
-echo Then re-run this script.
+echo Please install manually:
+echo   1. Double-click python-3.11.9-amd64.exe
+echo   2. Tick the box "Add python.exe to PATH" at the bottom
+echo   3. Click "Install Now"
+echo   4. After it finishes, re-run this install.bat
 echo.
 pause
 exit /b 1

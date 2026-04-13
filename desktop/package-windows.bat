@@ -58,10 +58,16 @@ mkdir "%APP%"       >NUL 2>&1
 mkdir "%RES%"       >NUL 2>&1
 
 REM --- 3. Copy template files from windows-dist\ ---
-echo [3/6] Copying launcher scripts (install.bat, run.bat, INSTALL.txt)...
-copy /Y "windows-dist\install.bat"            "%OUT%\"                >NUL
-copy /Y "windows-dist\run-PowerUp-Portal.bat" "%OUT%\"                >NUL
-copy /Y "windows-dist\INSTALL.txt"            "%OUT%\"                >NUL
+echo [3/6] Copying launcher scripts and bundled Python installer...
+copy /Y "windows-dist\install.bat"               "%OUT%\"             >NUL
+copy /Y "windows-dist\run-PowerUp-Portal.bat"    "%OUT%\"             >NUL
+copy /Y "windows-dist\INSTALL.txt"               "%OUT%\"             >NUL
+if exist "windows-dist\python-3.11.9-amd64.exe" (
+    copy /Y "windows-dist\python-3.11.9-amd64.exe" "%OUT%\"           >NUL
+) else (
+    echo [WARN] windows-dist\python-3.11.9-amd64.exe is missing.
+    echo        Teammates will need to install Python themselves.
+)
 
 REM --- 4. Filter requirements (drop pyinstaller - users don't build) ---
 REM Use findstr directly. Earlier `echo %%L` approach broke spectacularly

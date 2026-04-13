@@ -1,54 +1,51 @@
-PowerUp Portal — Windows install guide
-=======================================
+PowerUp Portal -- Windows install guide
+========================================
 
-You only need to do this ONCE. After setup, daily use is just a
-double-click on run-PowerUp-Portal.bat.
-
-
-Step 1.  Install Python 3.11 (one time, ~3 min)
-------------------------------------------------
-1. Open: https://www.python.org/downloads/windows/
-2. Click the yellow "Download Python 3.11.x" button
-3. Run the installer
-4. ** IMPORTANT **  Tick the box at the bottom:
-        [x] Add python.exe to PATH
-5. Click "Install Now"
-6. When it finishes, click "Close"
-
-(If you already have Python 3.11 or later, you can skip this step.)
+Everything you need is in this folder. No separate downloads.
+Two double-clicks total to set up. Daily use is one double-click.
 
 
-Step 2.  Set up PowerUp Portal (one time, ~2 min)
---------------------------------------------------
-1. Extract this folder somewhere on your computer
-     (e.g. Documents\PowerUp-Portal\)
-2. Open the folder in File Explorer
-3. Double-click   install.bat
-4. A black command window appears, shows progress,
-   then says "Setup complete!". Press any key to close.
+Step 1.  First-time setup  (one time, ~3 min)
+----------------------------------------------
+Double-click   install.bat
+
+A black window opens, shows progress, then says "Setup complete!".
+Press any key to close.
+
+What it does behind the scenes:
+   * If Python isn't installed yet, silently installs Python 3.11
+     from the bundled python-3.11.9-amd64.exe (no separate download).
+   * Creates a private Python environment in .venv\
+   * Downloads required libraries (pandas, customtkinter, etc.)
 
 
-Step 3.  Run the app (every time you want to use it)
-----------------------------------------------------
+Step 2.  Run the app  (every time you want to use it)
+------------------------------------------------------
 Double-click   run-PowerUp-Portal.bat
 
-The PowerUp Portal window opens. Use the M1 / M2 / M3 tabs
-as you would on the cloud version.
+The PowerUp Portal window opens with 4 tabs (M1 / M2 / M3 / Agreement).
 
 
 Troubleshooting
 ---------------
-"Python is not installed or not on PATH"
-    → You missed Step 1 part 4 (the tickbox). Uninstall Python and
-      reinstall with the "Add to PATH" box ticked.
+Setup hangs at "Installing Python..."
+   --> Wait ~60 seconds. Microsoft's installer is silent and slow.
 
-"Windows Defender blocked this file"
-    → Right-click install.bat or run-PowerUp-Portal.bat →
-      Properties → tick [x] Unblock → OK. Then try again.
+"Could not install Python automatically"
+   --> Double-click python-3.11.9-amd64.exe yourself.
+       In the installer, tick the box [x] Add python.exe to PATH.
+       Click "Install Now". When it finishes, re-run install.bat.
+
+Windows blocks the .bat with "this app might be harmful"
+   --> Right-click the .bat, Properties, tick [x] Unblock, OK.
+       Then double-click again.
 
 Nothing happens when I double-click run-PowerUp-Portal.bat
-    → Right-click it → Edit. The file should be only a few lines
-      starting with @echo off. If not, re-download the folder.
+   --> Run install.bat first. It must complete before the launcher works.
+
+App opens then crashes
+   --> A clear error dialog appears with the full traceback.
+       Screenshot and share with Krutang.
 
 Anything else
-    → Ping Krutang with a screenshot of the error.
+   --> Ping Krutang with a screenshot.

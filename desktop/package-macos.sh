@@ -55,10 +55,16 @@ rm -rf "$OUT"
 mkdir -p "$APP" "$RES"
 
 # --- 3. Copy template files ---
-echo "[3/6] Copying launcher scripts (install.command, run.command, INSTALL.txt)..."
+echo "[3/6] Copying launcher scripts and bundled Python installer..."
 cp -f macos-dist/install.command             "$OUT/"
 cp -f macos-dist/run-PowerUp-Portal.command  "$OUT/"
 cp -f macos-dist/INSTALL.txt                 "$OUT/"
+if [[ -f macos-dist/python-3.11.9-macos11.pkg ]]; then
+    cp -f macos-dist/python-3.11.9-macos11.pkg "$OUT/"
+else
+    echo "[WARN] macos-dist/python-3.11.9-macos11.pkg is missing."
+    echo "       Mac teammates will need to install Python themselves."
+fi
 chmod +x "$OUT/install.command" "$OUT/run-PowerUp-Portal.command"
 
 # --- 4. Filter requirements (drop pyinstaller — users don't build) ---
