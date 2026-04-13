@@ -1,21 +1,21 @@
 ┌──────────────────────────────────────────────────────────┐
 │   PowerUp Portal -- macOS first-time setup               │
-│   Read this BEFORE you double-click anything.            │
+│   READ THIS FIRST. Do NOT double-click install.command   │
+│   in Finder until you have done Step 1 below.            │
 └──────────────────────────────────────────────────────────┘
 
-macOS blocks unsigned scripts downloaded from the internet
-("Apple could not verify..."). You'll see this dialog the
-FIRST time you try to open install.command. This is normal
-and expected.
+macOS Sequoia (15) blocks unsigned scripts with a dialog
+saying "Apple could not verify install.command". The only
+buttons are "Done" and "Move to Bin" -- there is NO Open
+button, and even System Settings -> Privacy & Security ->
+"Open Anyway" does not always work for Sequoia.
 
-There are two ways to get past it. The TERMINAL way is
-faster (10 seconds, ONE command). The SETTINGS way uses
-the GUI but takes more clicks.
+The fix is one Terminal command. Don't fight Finder.
 
 
 
 ================================================================
-THE TERMINAL WAY (recommended -- 10 seconds)
+Step 1.  Strip the macOS quarantine flag (one-time, 30 seconds)
 ================================================================
 
 1. Open Terminal:
@@ -23,68 +23,34 @@ THE TERMINAL WAY (recommended -- 10 seconds)
       Type    Terminal
       Hit     Enter
 
-2. Drag the WHOLE FOLDER (PowerUp-Portal-Mac) from Finder
-   into the Terminal window. The folder's path appears.
+2. Copy this whole line:
 
-3. Replace what you see with this exact command (you can
-   copy it from this file):
+      cd ~/Downloads/PowerUp-Portal-Mac && xattr -cr . && bash install.command
 
-      xattr -dr com.apple.quarantine ~/Downloads/PowerUp-Portal-Mac
+   (If you extracted the folder somewhere OTHER than Downloads,
+   change the path. Easiest way: drag the PowerUp-Portal-Mac
+   folder from Finder onto Terminal and it'll auto-fill the path.)
 
-   (If the folder is somewhere else, change the path. Drag
-   the folder from Finder onto Terminal to get the right path.)
+3. Paste it into Terminal and press Enter.
 
-4. Press Enter. The command runs silently. Done.
+This single command does everything:
+   * cd into the folder
+   * xattr -cr strips macOS quarantine from every file
+     (no more "Apple could not verify" dialogs)
+   * bash install.command runs the setup script
+     - Installs Python 3.11 from the bundled .pkg if needed
+       (will prompt for your Mac password)
+     - Creates a private Python environment in .venv/
+     - Installs all dependencies
+     - Removes quarantine from run-PowerUp-Portal.command
+       so daily use needs ZERO Gatekeeper bypasses
 
-5. Now double-click   install.command   in Finder. It works.
-
-
-
-================================================================
-THE SETTINGS WAY (no Terminal, but more clicks)
-================================================================
-
-1. Double-click install.command. The "Apple could not verify"
-   dialog appears. Click   Done.
-
-2. Open System Settings:
-      Click the Apple logo (top-left)
-      Click   System Settings
-      Click   Privacy & Security   (left sidebar)
-      Scroll down to the "Security" section
-
-3. You'll see:
-      "install.command was blocked from use because it is
-      not from an identified developer."
-   Click the   Open Anyway   button next to that message.
-
-4. macOS asks you to authenticate (Touch ID or password). Do it.
-
-5. The script now runs. From this point on, double-clicks
-   work normally for both install.command AND
-   run-PowerUp-Portal.command.
+Wait until you see "Setup complete!". Close the Terminal.
 
 
 
 ================================================================
-WHAT HAPPENS DURING SETUP
-================================================================
-
-install.command will:
-   1. Look for Python 3.9+ on your Mac. If found, use it.
-   2. If missing, install Python 3.11 from the bundled
-      python-3.11.9-macos11.pkg (you'll be prompted for your
-      Mac password).
-   3. Create a private .venv/ folder with all required libraries.
-   4. Strip the quarantine attribute from run-PowerUp-Portal.command
-      so DAILY USE doesn't hit the Gatekeeper dialog.
-
-When you see "Setup complete!", close the Terminal window.
-
-
-
-================================================================
-DAILY USE (after first-time setup)
+Step 2.  Run the app (every time you want to use it)
 ================================================================
 
 Just double-click   run-PowerUp-Portal.command   in Finder.
@@ -92,4 +58,49 @@ Just double-click   run-PowerUp-Portal.command   in Finder.
 The PowerUp Portal window opens with 4 tabs:
    M1 Report  /  M2 Deck  /  M3 Deck  /  Agreement
 
-Use as needed.
+NO Gatekeeper dialog will appear -- Step 1 already cleared it.
+
+
+
+================================================================
+Why this works
+================================================================
+
+When you download a file via Safari/Chrome/Firefox, macOS
+attaches a "com.apple.quarantine" extended attribute to it.
+Gatekeeper sees that attribute and blocks the file unless it
+is signed by a registered Apple Developer (which costs $99/yr
+and is overkill for an internal team tool).
+
+`xattr -cr .` removes the attribute from every file in the
+folder. With no quarantine flag, Gatekeeper does not check
+the file at all -- it just opens.
+
+Running install.command via `bash install.command` ALSO bypasses
+Gatekeeper, because Bash itself is signed by Apple and treats
+shell scripts as data, not as launchable code.
+
+
+
+================================================================
+If something still goes wrong
+================================================================
+
+"command not found: bash"
+   --> Should never happen on macOS. Check if you're using zsh:
+       `zsh install.command` works too.
+
+"command not found: python3"
+   --> The bundled installer didn't install Python.
+       Double-click python-3.11.9-macos11.pkg manually,
+       click through the installer, then re-run Step 1.
+
+"Sudo prompt won't accept my password"
+   --> Make sure you have admin rights on the Mac.
+
+App opens but crashes
+   --> A clear error dialog appears with the full traceback.
+       Screenshot and share with Krutang.
+
+Anything else
+   --> Ping Krutang with a screenshot.
