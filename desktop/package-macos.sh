@@ -44,8 +44,8 @@ if [[ ! -f "resources/credentials.json" ]]; then
     echo "        Copy your service account JSON to that path before packaging."
     exit 1
 fi
-if [[ ! -f "macos-dist/install.sh" ]]; then
-    echo "[ERROR] macos-dist/install.sh is missing. Repo is broken."
+if [[ ! -f "macos-dist/install.command" ]]; then
+    echo "[ERROR] macos-dist/install.command is missing. Repo is broken."
     exit 1
 fi
 
@@ -55,11 +55,11 @@ rm -rf "$OUT"
 mkdir -p "$APP" "$RES"
 
 # --- 3. Copy template files ---
-echo "[3/6] Copying launcher scripts (install.sh, run.command, INSTALL.txt)..."
-cp -f macos-dist/install.sh                  "$OUT/"
+echo "[3/6] Copying launcher scripts (install.command, run.command, INSTALL.txt)..."
+cp -f macos-dist/install.command             "$OUT/"
 cp -f macos-dist/run-PowerUp-Portal.command  "$OUT/"
 cp -f macos-dist/INSTALL.txt                 "$OUT/"
-chmod +x "$OUT/install.sh" "$OUT/run-PowerUp-Portal.command"
+chmod +x "$OUT/install.command" "$OUT/run-PowerUp-Portal.command"
 
 # --- 4. Filter requirements (drop pyinstaller — users don't build) ---
 echo "[4/6] Generating filtered requirements.txt..."

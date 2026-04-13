@@ -9,7 +9,7 @@
 cd "$(dirname "$0")"
 
 if [[ ! -f ".venv/bin/python3" ]]; then
-    osascript -e 'display alert "PowerUp Portal" message "Setup not complete.\n\nOpen the install.sh file first (right-click → Open With → Terminal). After it finishes, double-click this file again."'
+    osascript -e 'display alert "PowerUp Portal" message "Setup not complete.\n\nDouble-click install.command first (one-time setup). When it finishes, come back and double-click this file again."'
     exit 1
 fi
 

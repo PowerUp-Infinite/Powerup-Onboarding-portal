@@ -24,42 +24,45 @@ Step 2.  Set up PowerUp Portal (one time, ~2 min)
 --------------------------------------------------
 1. Extract this folder somewhere on your Mac
      (e.g. ~/Documents/PowerUp-Portal/)
-2. Open Terminal (Cmd+Space → "Terminal" → Enter)
-3. Drag the install.sh file from the folder into the Terminal window
-   and press Enter.
-
-   (Or: cd into the folder yourself and run:  bash install.sh)
-
-4. The Terminal shows progress, then says "Setup complete!".
+2. Open the folder in Finder
+3. ** First time only: ** macOS Gatekeeper will refuse to open the
+   file because it's unsigned. To bypass:
+      • Right-click  install.command
+      • Click  Open
+      • In the warning dialog, click  Open  again
+   macOS remembers this choice — from then on, double-click works.
+4. install.command opens a Terminal window, shows progress, then says
+   "Setup complete!". Wait for it to finish, then close that Terminal.
 
 
 Step 3.  Run the app (every time you want to use it)
 ----------------------------------------------------
 Double-click   run-PowerUp-Portal.command
 
-The PowerUp Portal window opens.
+** First time only: ** Same Gatekeeper bypass as Step 2.4 —
+right-click → Open → Open. Subsequent launches are just a double-click.
 
-** First time only: ** macOS Gatekeeper will refuse to open the file
-because it's unsigned. To bypass:
-   1. Right-click run-PowerUp-Portal.command
-   2. Click "Open"
-   3. In the warning dialog, click "Open" again
-macOS remembers this choice — from then on, double-click works normally.
+The PowerUp Portal window opens with 4 tabs (M1 / M2 / M3 / Agreement).
 
 
 Troubleshooting
 ---------------
 "command not found: python3" or similar
-    → You missed Step 1, or the installer didn't add python3 to PATH.
-      Re-run the python.org installer, OR install via brew.
+    → You missed Step 1. Install Python 3.11 from python.org.
 
 "This script cannot be opened because it is from an unidentified developer"
     → Right-click the .command file → Open. Click Open in the prompt.
+      You only need to do this once per install per file.
 
-Nothing happens when I double-click run-PowerUp-Portal.command
-    → Check the file is executable:
-        chmod +x run-PowerUp-Portal.command
+Nothing happens when I double-click
+    → Open Terminal (Cmd+Space → "Terminal"), then run:
+        chmod +x ~/Documents/PowerUp-Portal/*.command
+        chmod +x ~/Documents/PowerUp-Portal/*.sh 2>/dev/null
       Then try double-clicking again.
+
+App opens then crashes
+    → A clear error dialog should appear with the full traceback.
+      Screenshot and share with Krutang.
 
 Anything else
     → Ping Krutang with a screenshot of the error.
