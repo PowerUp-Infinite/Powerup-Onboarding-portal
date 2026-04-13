@@ -105,17 +105,34 @@ M3_OUTPUT_FOLDER_ID         = _req('M3_OUTPUT_FOLDER_ID')
 # replacement for google_auth.py. When portal/sheets.py does
 # `from google_auth import get_sheets_service`, Python resolves to the shim,
 # NOT to portal/google_auth.py which imports streamlit. That's how we keep
-# the desktop bundle free of streamlit entirely.
+# the desktop free of streamlit entirely.
+#
+# Three runtime layouts to handle:
+#   1. PyInstaller bundle    portal/ extracted to sys._MEIPASS/portal/
+#   2. Folder distribution   portal/ is a SIBLING of app_config.py
+#                            (PowerUp-Portal-Windows/app/portal/)
+#   3. Dev (running from desktop/)  portal/ is one level up
+#                                   (../portal/, via repo_root())
 def _prepare_portal_imports() -> None:
+    here = Path(__file__).resolve().parent
+
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         meipass = sys._MEIPASS  # type: ignore[attr-defined]
         portal_path = os.path.join(meipass, 'portal')
         shims_path  = os.path.join(meipass, 'portal_shims')
     else:
-        portal_path = str(repo_root() / 'portal')
-        shims_path  = str(Path(__file__).resolve().parent / 'portal_shims')
+        # Folder distribution: portal/ alongside app_config.py
+        sibling_portal = here / 'portal'
+        if sibling_portal.is_dir():
+            portal_path = str(sibling_portal)
+        else:
+            # Dev mode: portal/ at repo root
+            portal_path = str(repo_root() / 'portal')
+        shims_path = str(here / 'portal_shims')
 
-    # shims LAST in the insert order means FIRST on sys.path.
+    # shims LAST in the insert order means FIRST on sys.path,
+    # so portal/sheets.py's `from google_auth import ...` resolves to
+    # our streamlit-free shim, not portal/google_auth.py.
     for path in (portal_path, shims_path):
         if path not in sys.path:
             sys.path.insert(0, path)
