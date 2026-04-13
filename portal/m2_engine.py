@@ -176,17 +176,20 @@ PIE_IMG_HEIGHT = 3190450
 # DATA LOADING
 # ──────────────────────────────────────────────────────────────
 
-def load_data():
-    """Load all data from Google Sheets (+ categorization file from Drive)."""
+def load_data(pf_id: str | None = None):
+    """Load all data from Google Sheets (+ categorization file from Drive).
+    If pf_id is given, the large per-client tabs (Lines, Invested_Value_Line)
+    are filtered to just that client — drastically reduces peak memory on
+    Streamlit Cloud (free tier has only ~1 GB, full Lines can be >1 M rows)."""
     data = {}
     data['pf_level']       = sheets.read_pf_level()
     data['riskgroup']      = sheets.read_riskgroup_level()
     data['scheme']         = sheets.read_scheme_level()
     data['categorization'] = pd.read_excel(_get_categorization_path())
     data['questionnaire']  = sheets.read_questionnaire()
-    data['lines']          = sheets.read_lines()
+    data['lines']          = sheets.read_lines(pf_id=pf_id) if pf_id else sheets.read_lines()
     data['results']        = sheets.read_results()
-    data['invested']       = sheets.read_invested_value_line()
+    data['invested']       = sheets.read_invested_value_line(pf_id=pf_id) if pf_id else sheets.read_invested_value_line()
     # Convert numeric columns that come back as strings from Sheets API
     _text_cols = {
         'PF_ID', 'ISIN', 'NAME', 'FUND_NAME', 'FUND_STANDARD_NAME',
@@ -309,6 +312,21 @@ def _parse_dates(series):
                 return _EXCEL_EPOCH + pd.Timedelta(days=int(n))
         except (ValueError, TypeError):
             pass
+        # ISO format strings ("2024-09-01" or "2024-09-01 00:00:00") MUST be
+        # parsed as YYYY-MM-DD, not dayfirst=True (which would give Jan 9).
+        # Try ISO first, fall back to dayfirst for "01/09/2024" style strings.
+        s = str(v).strip()
+        if not s:
+            return pd.NaT
+        # ISO-ish: starts with 4 digits then '-'
+        if len(s) >= 10 and s[:4].isdigit() and s[4] == '-':
+            try:
+                return pd.to_datetime(s, format='ISO8601', errors='raise')
+            except Exception:
+                try:
+                    return pd.to_datetime(s, errors='raise')
+                except Exception:
+                    return pd.NaT
         try:
             return pd.to_datetime(v, dayfirst=True)
         except Exception:
@@ -1682,8 +1700,16 @@ def do_slide13(prs, pf_id, risk_profile, data):
     cust_lines = lines_df[lines_df['PF_ID'] == pf_id].copy()
     cust_lines['DATE'] = _parse_dates(cust_lines['DATE'])
 
-    pf_line  = cust_lines[cust_lines['TYPE'] == 'pf'].sort_values('DATE')
-    inf_line = cust_lines[cust_lines['TYPE'] == inf_type].sort_values('DATE')
+    # Dedupe by DATE — Lines often has each date twice (one row stored as
+    # "2024-09-01" and another as "2024-09-01 00:00:00"). Without this the
+    # chart shows a sawtooth/zigzag pattern because matplotlib draws a line
+    # between every consecutive pair, including the duplicate same-date pairs.
+    pf_line  = (cust_lines[cust_lines['TYPE'] == 'pf']
+                .sort_values('DATE')
+                .drop_duplicates(subset='DATE', keep='last'))
+    inf_line = (cust_lines[cust_lines['TYPE'] == inf_type]
+                .sort_values('DATE')
+                .drop_duplicates(subset='DATE', keep='last'))
 
     if pf_line.empty or inf_line.empty:
         print(f"  Slide 13: missing line data for '{pf_id}' — skipping")
@@ -1916,10 +1942,15 @@ def _get_answer(question_text, q_row, context=''):
             if isinstance(v, float) and pd.isna(v): return '-'
             try: return f'{int(v)} years'
             except Exception: return _safe_str(v)
-        if 'debt financing' in q:
-            return _safe_str(q_row.get('Home: Loan Y/N'))
+        # Order matters: 'down payment' must come BEFORE 'debt financing'
+        # because slide questions like "Will you take debt financing for the
+        # down payment?" contain BOTH keywords. The first match wins, so
+        # the down payment % field would otherwise be returned as 'Yes'
+        # from Home: Loan Y/N.
         if 'down payment' in q:
             return _safe_pct(q_row.get('Home: Down Payment %'))
+        if 'debt financing' in q or 'loan' in q:
+            return _safe_str(q_row.get('Home: Loan Y/N'))
     if 'value of home' in q:
         return _safe_inr(q_row.get('Home: Value', 0))
     if 'monthly rent' in q:

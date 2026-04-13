@@ -17,14 +17,15 @@ import requests
 from workers.common import PROGRESS
 
 
-# Same canonical-tab aliasing as portal/tabs/m1_report.py uses.
+# M1 Apps Script only reads SCHEME_DATA / PF_LEVEL / BASE_DATA from the
+# Main spreadsheet. BASE_DATA is static reference data that's already in
+# Sheets — no need to upload. Riskgroup/Results/Lines/Invested are M2/M3
+# data that the M1 report doesn't touch, so syncing them here would just
+# pollute the main sheet with unused rows AND make every M1 generation
+# 30-60 seconds slower (Lines alone is 1M+ rows on the timeseries sheet).
 _TAB_UPSERT: dict[str, str] = {
-    'pf_level':            'upsert_pf_level',
-    'scheme_level':        'upsert_scheme_level',
-    'riskgroup_level':     'upsert_riskgroup_level',
-    'results':             'upsert_results',
-    'lines':               'upsert_lines',
-    'invested_value_line': 'upsert_invested_value_line',
+    'pf_level':     'upsert_pf_level',
+    'scheme_level': 'upsert_scheme_level',
 }
 
 _TAB_ALIASES: dict[str, str] = {}
@@ -33,25 +34,19 @@ for _k in _TAB_UPSERT:
     _TAB_ALIASES[_k.lower().replace('_', '')] = _k
     _TAB_ALIASES[_k.lower().replace('_', ' ')] = _k
 
-_LARGE_PER_CLIENT = {'lines', 'invested_value_line'}
-
-
 def _sync_excel_to_sheets(xlsx_path: str, only_pf_id: str) -> list[str]:
-    """Upsert each recognised tab from xlsx into Main Data / Timeseries.
-    Filters Lines + Invested_Value_Line to `only_pf_id` to keep memory sane."""
+    """Upsert PF_level + Scheme_level from xlsx into the Main Data
+    spreadsheet. Filters each tab to rows for `only_pf_id` to keep memory
+    sane and to avoid clobbering other clients' rows.
+    Other tabs (Lines / Invested / Riskgroup / Results) are deliberately
+    NOT synced — the M1 Apps Script doesn't read them."""
     import sheets  # type: ignore
     import gc
 
     synced: list[str] = []
     xl = pd.ExcelFile(xlsx_path)
 
-    # Small tabs first, large per-client tabs last.
-    ordered = sorted(
-        xl.sheet_names,
-        key=lambda s: 1 if _TAB_ALIASES.get(s.strip().lower()) in _LARGE_PER_CLIENT else 0,
-    )
-
-    for sheet_name in ordered:
+    for sheet_name in xl.sheet_names:
         canonical = _TAB_ALIASES.get(sheet_name.strip().lower())
         if not canonical:
             continue
@@ -61,7 +56,9 @@ def _sync_excel_to_sheets(xlsx_path: str, only_pf_id: str) -> list[str]:
             df.columns = [str(c).lstrip('\ufeff').strip() for c in df.columns]
             if df.empty:
                 continue
-            if canonical in _LARGE_PER_CLIENT and 'PF_ID' in df.columns:
+            # Always filter to the selected PF_ID — M1 only ever reads this
+            # one client. Avoids overwriting other clients' rows.
+            if 'PF_ID' in df.columns:
                 df = df[df['PF_ID'].astype(str) == str(only_pf_id)].copy()
                 if df.empty:
                     continue

@@ -33,7 +33,9 @@ from ui_theme import Color, Font, Space, Radius, BUTTON_H, BUTTON_H_LG, INPUT_H,
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")   # overridden per-widget via fg_color
 
-WINDOW_W, WINDOW_H = 960, 720
+# Default window size: 960x680 fits comfortably on a 1366x768 laptop
+# (taskbar leaves ~720px usable). Content scrolls so even shorter screens work.
+WINDOW_W, WINDOW_H = 960, 680
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -141,7 +143,21 @@ class _BaseTab(ctk.CTkFrame):
     GENERATE_LABEL = "Generate"
 
     def __init__(self, parent, status_cb):
+        # Outer frame fills the tab; an inner scrollable frame holds all
+        # the content so the user can still see the "Open in Drive" button
+        # on a 1366x768 laptop even when every card is expanded.
         super().__init__(parent, fg_color=Color.BG_APP)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self._scroll = ctk.CTkScrollableFrame(
+            self, fg_color=Color.BG_APP, corner_radius=0,
+            scrollbar_button_color=Color.BORDER,
+            scrollbar_button_hover_color=Color.SECONDARY_BORDER,
+        )
+        self._scroll.grid(row=0, column=0, sticky="nsew")
+        self._scroll.grid_columnconfigure(0, weight=1)
+
         self.status_cb = status_cb
         self.xlsx_path: str | None = None
         self.clients: list[tuple[str, str]] = []
@@ -151,10 +167,14 @@ class _BaseTab(ctk.CTkFrame):
 
     # ── Scaffolding ──────────────────────────────────────────
     def _build_ui(self):
-        self.grid_columnconfigure(0, weight=1)
+        # All grid() calls below put their widgets inside self._scroll
+        # rather than self, so the whole tab content scrolls.
+        self._scroll.grid_columnconfigure(0, weight=1)
+
+        s = self._scroll  # shorthand — every widget below lives inside it
 
         # Header (no card — sits directly on the app bg)
-        header = ctk.CTkFrame(self, fg_color="transparent")
+        header = ctk.CTkFrame(s, fg_color="transparent")
         header.grid(row=0, column=0, padx=Space.XXL, pady=(Space.XL, Space.MD),
                     sticky="ew")
         header.grid_columnconfigure(0, weight=1)
@@ -170,7 +190,7 @@ class _BaseTab(ctk.CTkFrame):
             ).grid(row=1, column=0, sticky="ew", pady=(Space.XS, 0))
 
         # Upload card
-        upload_card = Card(self)
+        upload_card = Card(s)
         upload_card.grid(row=1, column=0, padx=Space.XXL, pady=(Space.MD, Space.MD),
                          sticky="ew")
         upload_card.grid_columnconfigure(1, weight=1)
@@ -188,7 +208,7 @@ class _BaseTab(ctk.CTkFrame):
                              pady=Space.LG, sticky="ew")
 
         # Client picker (shown only when >1 clients)
-        self.picker_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.picker_frame = ctk.CTkFrame(s, fg_color="transparent")
         self.picker_frame.grid(row=2, column=0, padx=Space.XXL, pady=(0, Space.SM),
                                sticky="ew")
         self.picker_frame.grid_columnconfigure(1, weight=1)
@@ -202,7 +222,7 @@ class _BaseTab(ctk.CTkFrame):
         self._hide_picker()
 
         # Subclass extras (questionnaire picker for M2, name entry for M3)
-        self.extra_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.extra_frame = ctk.CTkFrame(s, fg_color="transparent")
         self.extra_frame.grid(row=3, column=0, padx=Space.XXL, pady=(0, Space.LG),
                               sticky="ew")
         self.extra_frame.grid_columnconfigure(1, weight=1)
@@ -210,7 +230,7 @@ class _BaseTab(ctk.CTkFrame):
 
         # Generate button (hero size)
         self.generate_btn = HeroButton(
-            self, text=self.GENERATE_LABEL, command=self._on_generate_click,
+            s, text=self.GENERATE_LABEL, command=self._on_generate_click,
             state="disabled",
         )
         self.generate_btn.grid(row=4, column=0, padx=Space.XXL,
@@ -218,14 +238,14 @@ class _BaseTab(ctk.CTkFrame):
 
         # Progress bar (hidden until working)
         self.progress = ctk.CTkProgressBar(
-            self, mode='indeterminate', height=4,
+            s, mode='indeterminate', height=4,
             progress_color=Color.PRIMARY, fg_color=Color.BORDER,
             corner_radius=Radius.PILL,
         )
         # Not grid'd until we start working
 
         # Result card (populated on success, hidden otherwise)
-        self.result_frame = Card(self)
+        self.result_frame = Card(s)
         self.result_frame.grid_columnconfigure(0, weight=1)
         # Not grid'd yet
 
@@ -359,6 +379,7 @@ class _BaseTab(ctk.CTkFrame):
         messagebox.showerror("Generation failed", body)
 
     def _show_progress(self):
+        # Lives inside self._scroll, so positions are relative to that.
         self.progress.grid(row=5, column=0, padx=Space.XXL, pady=(0, Space.MD),
                            sticky="ew")
         self.progress.start()
@@ -372,6 +393,12 @@ class _BaseTab(ctk.CTkFrame):
             w.destroy()
         self.result_frame.grid(row=6, column=0, padx=Space.XXL,
                                pady=(Space.SM, Space.XL), sticky="ew")
+        # Auto-scroll to the result card so users on small laptop screens
+        # don't have to manually scroll down to see "Open in Drive".
+        try:
+            self._scroll._parent_canvas.yview_moveto(1.0)
+        except Exception:
+            pass
 
         # Green "success" pill
         pill = ctk.CTkLabel(
@@ -629,7 +656,9 @@ class App(ctk.CTk):
         super().__init__()
         self.title("PowerUp Portal (Local)")
         self.geometry(f"{WINDOW_W}x{WINDOW_H}")
-        self.minsize(840, 620)
+        # Min size kept generous-enough that the upload + generate button are
+        # always visible without scrolling. Below that, scroll handles it.
+        self.minsize(820, 540)
         self.configure(fg_color=Color.BG_APP)
 
         self.grid_rowconfigure(1, weight=1)
