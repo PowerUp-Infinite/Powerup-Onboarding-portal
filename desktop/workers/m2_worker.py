@@ -21,9 +21,18 @@ from workers.common import (
 
 
 def generate(xlsx_path: str, pf_id: str, customer_name: str,
-             questionnaire_name: str | None = None) -> dict:
+             questionnaire_name: str | None = None,
+             override_risk_profile: str | None = None) -> dict:
     """Run the full M2 pipeline for one client. Returns
-    {'url': drive_url, 'name': drive_title, 'filename': pptx_filename}."""
+    {'url': drive_url, 'name': drive_title, 'filename': pptx_filename}.
+
+    override_risk_profile (optional): one of the RISK_SCALE values
+        ('Very Conservative' / 'Conservative' / 'Balanced' / 'Aggressive'
+         / 'Very Aggressive'). Bypasses the calculated questionnaire
+        risk profile — affects slide 3 display, slide 4 match indicator,
+        slide 6 body text, slide 13 Infinite line, AND which Risk
+        Reward slides are inserted at slides 15-18.
+    """
     # Late imports — portal/m2_engine.py pulls matplotlib, python-pptx, etc.,
     # which are slow. Deferring keeps the GUI snappy on startup.
     import m2_engine   # type: ignore  # via portal/ on sys.path
@@ -49,10 +58,15 @@ def generate(xlsx_path: str, pf_id: str, customer_name: str,
     # from Drive on demand via cached helpers. No extra plumbing needed here.
     data['categorization'] = pd.read_excel(m2_engine._get_categorization_path())
 
-    PROGRESS(f"[5/5] Generating deck for {customer_name}...")
+    if override_risk_profile:
+        PROGRESS(f"[5/5] Generating deck for {customer_name} "
+                 f"(override risk profile: {override_risk_profile})...")
+    else:
+        PROGRESS(f"[5/5] Generating deck for {customer_name}...")
     buf, filename = m2_engine.generate_deck(
         pf_id, customer_name, data=data,
         questionnaire_name=questionnaire_name,
+        override_risk_profile=override_risk_profile,
     )
 
     PROGRESS("Uploading to Google Drive...")

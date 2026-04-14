@@ -2788,7 +2788,8 @@ def do_questionnaire(prs, goals, q_row):
 # MAIN
 # ──────────────────────────────────────────────────────────────
 
-def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None):
+def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
+                  override_risk_profile=None):
     """Generate a personalised M2 strategy deck.
 
     Args:
@@ -2797,6 +2798,12 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None):
         data: Pre-loaded data dict (optional - loaded from Google Sheets if None)
         questionnaire_name: If provided, match questionnaire row by this name
                             instead of using customer_name for matching.
+        override_risk_profile: One of RISK_SCALE values
+            ('Very Conservative' / 'Conservative' / 'Balanced' / 'Aggressive'
+             / 'Very Aggressive'). When provided, overrides the calculated
+            risk profile from the questionnaire — propagates to slide 3
+            (display), slide 4 (match check vs portfolio risk), slide 6,
+            slide 13 (Infinite line type), and Risk Reward slide selection.
 
     Returns:
         (pptx_bytes: BytesIO, filename: str)
@@ -2864,9 +2871,15 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None):
                .agg({"% of PF": "sum", "CURRENT_VALUE": "sum"})
                .reset_index())
 
-    # Risk profile
+    # Risk profile (calculated from questionnaire, then optionally overridden)
     print("\n[2/8] Risk profile...")
-    risk_profile = calc_risk_profile(q_row) if not q_row.empty else "Balanced"
+    calculated = calc_risk_profile(q_row) if not q_row.empty else "Balanced"
+    if override_risk_profile and override_risk_profile in RISK_SCALE:
+        risk_profile = override_risk_profile
+        print(f"  Override applied: '{calculated}' (calculated) -> "
+              f"'{risk_profile}' (override)")
+    else:
+        risk_profile = calculated
 
     # Download base deck from Google Drive and open
     print("\n[2b/8] Downloading base deck from Drive...")

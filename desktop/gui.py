@@ -461,6 +461,16 @@ class M2Tab(_BaseTab):
     _Q_LOADING = "(loading…)"
     _Q_FAILED  = "(fetch failed — see status bar)"
 
+    _RISK_AUTO = "(use calculated)"
+    _RISK_OPTIONS = [
+        _RISK_AUTO,
+        "Very Conservative",
+        "Conservative",
+        "Balanced",
+        "Aggressive",
+        "Very Aggressive",
+    ]
+
     def _build_extra(self, parent):
         parent.grid_columnconfigure(1, weight=1)
 
@@ -482,8 +492,46 @@ class M2Tab(_BaseTab):
         self.q_match_label.grid(row=1, column=1, sticky="ew",
                                 pady=(Space.XS, 0))
 
+        MutedLabel(parent, text="Risk profile").grid(
+            row=2, column=0, padx=(0, Space.MD), pady=(Space.MD, 0), sticky="w",
+        )
+        self.risk_dropdown = Dropdown(
+            parent, values=self._RISK_OPTIONS,
+            command=self._on_risk_selected, width=420,
+        )
+        self.risk_dropdown.set(self._RISK_AUTO)
+        self.risk_dropdown.grid(row=2, column=1, sticky="ew",
+                                pady=(Space.MD, 0))
+
+        self.risk_hint_label = ctk.CTkLabel(
+            parent,
+            text=("Default uses the questionnaire-calculated profile. "
+                  "Override propagates to slides 3, 4, 6, 13 and the "
+                  "Risk Reward slides."),
+            font=Font.SMALL, text_color=Color.TEXT_SECONDARY, anchor="w",
+            wraplength=600, justify="left",
+        )
+        self.risk_hint_label.grid(row=3, column=1, sticky="ew",
+                                  pady=(Space.XS, 0))
+
         self._q_names: list[str] = []
         self._fetch_questionnaire_names()
+
+    def _on_risk_selected(self, _v):
+        selected = self.risk_dropdown.get()
+        if selected == self._RISK_AUTO:
+            self.risk_hint_label.configure(
+                text=("Default uses the questionnaire-calculated profile. "
+                      "Override propagates to slides 3, 4, 6, 13 and the "
+                      "Risk Reward slides."),
+                text_color=Color.TEXT_SECONDARY,
+            )
+        else:
+            self.risk_hint_label.configure(
+                text=(f"Override active: '{selected}'. The calculated "
+                      f"profile will be ignored."),
+                text_color=Color.WARNING,
+            )
 
     def _fetch_questionnaire_names(self):
         def _work():
@@ -604,9 +652,16 @@ class M2Tab(_BaseTab):
             q_name = None
         else:
             q_name = selected
+
+        risk_selected = self.risk_dropdown.get()
+        override_risk = (
+            risk_selected if risk_selected != self._RISK_AUTO else None
+        )
+
         return m2_worker.generate(
             self.xlsx_path, self.selected_pf_id, customer_name,
             questionnaire_name=q_name,
+            override_risk_profile=override_risk,
         )
 
 
