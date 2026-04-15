@@ -19,6 +19,12 @@ echo   PowerUp Portal - First-time setup
 echo ========================================
 echo.
 
+REM Sanity: requirements.txt must sit alongside install.bat. If it's
+REM missing, the user almost certainly double-clicked install.bat from
+REM inside the zip preview (Windows copies the .bat to a temp dir where
+REM the sibling files don't exist). Catch this early with a clear message.
+if not exist "%~dp0requirements.txt" goto :requirements_missing
+
 REM --- 1. Check Python ---
 echo [1/4] Checking Python installation...
 python --version >NUL 2>&1
@@ -66,8 +72,10 @@ echo [3/4] Upgrading pip...
 .venv\Scripts\python.exe -m pip install --upgrade pip --quiet
 
 REM --- 4. Install dependencies ---
+REM Use the absolute path to requirements.txt so this works even if the
+REM caller's cwd somehow differs from %~dp0 (Windows zip-preview etc.).
 echo [4/4] Installing dependencies. Takes ~1-2 min on first run...
-.venv\Scripts\python.exe -m pip install -r requirements.txt --quiet
+.venv\Scripts\python.exe -m pip install -r "%~dp0requirements.txt" --quiet
 if errorlevel 1 goto :pip_failed
 
 echo.
@@ -85,6 +93,24 @@ exit /b 0
 echo.
 echo [ERROR] python-3.11.9-amd64.exe is missing from this folder.
 echo         Re-download the PowerUp-Portal-Windows.zip and try again.
+echo.
+pause
+exit /b 1
+
+
+:requirements_missing
+echo.
+echo [ERROR] requirements.txt was not found next to install.bat.
+echo.
+echo This usually means you double-clicked install.bat from INSIDE
+echo the .zip file in Windows Explorer. Windows runs the .bat from
+echo a temporary folder that does not contain the other files.
+echo.
+echo Fix:
+echo   1. Right-click PowerUp-Portal-Windows.zip
+echo   2. Choose "Extract All..." and pick a real folder, e.g. Desktop
+echo   3. Open the EXTRACTED folder
+echo   4. Double-click install.bat from inside that folder
 echo.
 pause
 exit /b 1
