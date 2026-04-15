@@ -190,6 +190,10 @@ def load_data(pf_id: str | None = None):
     data['lines']          = sheets.read_lines(pf_id=pf_id) if pf_id else sheets.read_lines()
     data['results']        = sheets.read_results()
     data['invested']       = sheets.read_invested_value_line(pf_id=pf_id) if pf_id else sheets.read_invested_value_line()
+    # is_demat: only present in uploaded Excels (desktop flow). Not available
+    # via Google Sheets yet, so default to empty here — do_slide4 falls back to
+    # PF_level columns / leaves the slide default in that case.
+    data['is_demat']       = pd.DataFrame()
     # Convert numeric columns that come back as strings from Sheets API
     _text_cols = {
         'PF_ID', 'ISIN', 'NAME', 'FUND_NAME', 'FUND_STANDARD_NAME',
@@ -773,7 +777,7 @@ def _shape_max_font_emu(shape):
     return mx
 
 
-def do_slide4(prs, pf, rg_agg, risk_profile):
+def do_slide4(prs, pf, rg_agg, risk_profile, is_demat_df=None):
     """
     Slide 4 uses text-based shape lookup (not hardcoded Google Shape IDs)
     because every edit of the Drive template shifts shape IDs by +1. Labels
@@ -889,8 +893,39 @@ def do_slide4(prs, pf, rg_agg, risk_profile):
             f *= 100
         return f'{int(round(f))}%'
 
-    soa_val   = pf.get('SOA%') if hasattr(pf, 'get') else None
-    demat_val = pf.get('Demat%') if hasattr(pf, 'get') else None
+    # SOA% / Demat% — prefer the dedicated 'Is demat' sheet (rows split by
+    # IS_DEMAT bool, PCT_OF_USER sums to 1). Fall back to legacy columns on
+    # PF_level for back-compat with older Excels / the cloud flow.
+    soa_val, demat_val = None, None
+    if is_demat_df is not None and not is_demat_df.empty \
+            and 'IS_DEMAT' in is_demat_df.columns \
+            and 'PCT_OF_USER' in is_demat_df.columns:
+        def _is_true(v):
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, (int, float)) and not pd.isna(v):
+                return float(v) != 0.0
+            return str(v).strip().lower() in ('true', 'yes', '1', 't', 'y')
+        mask_true = is_demat_df['IS_DEMAT'].apply(_is_true)
+        demat_frac = float(
+            pd.to_numeric(is_demat_df.loc[mask_true, 'PCT_OF_USER'],
+                          errors='coerce').fillna(0).sum()
+        )
+        soa_frac = float(
+            pd.to_numeric(is_demat_df.loc[~mask_true, 'PCT_OF_USER'],
+                          errors='coerce').fillna(0).sum()
+        )
+        # Convert fractions (0..1) to integer percent here so the downstream
+        # _fmt_pct_for_slide doesn't mis-classify a true 100% (fraction=1.0)
+        # as "1%". The "fraction vs already-percent" boundary check inside
+        # _fmt_pct_for_slide is only correct for ambiguous PF_level columns.
+        demat_val = int(round(demat_frac * 100))
+        soa_val   = int(round(soa_frac   * 100))
+        print(f"  Slide 4: is_demat sheet -> SOA={soa_val}%, "
+              f"Demat={demat_val}%")
+    else:
+        soa_val   = pf.get('SOA%') if hasattr(pf, 'get') else None
+        demat_val = pf.get('Demat%') if hasattr(pf, 'get') else None
 
     for label_text, raw, kind in (('SOA', soa_val, 'soa'),
                                   ('Demat', demat_val, 'demat')):
@@ -2903,7 +2938,11 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
         print("  SKIPPED (no questionnaire data)")
 
     print("[6/9] Slide 4 - Portfolio Snapshot")
-    do_slide4(prs, pf_row, rg_agg, risk_profile)
+    is_demat_df = data.get('is_demat', pd.DataFrame())
+    if not is_demat_df.empty and 'PF_ID' in is_demat_df.columns:
+        is_demat_df = is_demat_df[is_demat_df['PF_ID'].astype(str).str.strip()
+                                  == str(pf_id).strip()]
+    do_slide4(prs, pf_row, rg_agg, risk_profile, is_demat_df=is_demat_df)
 
     print("[6b/9] Slide 6 - What's working well")
     do_slide6(prs, pf_row, risk_profile)

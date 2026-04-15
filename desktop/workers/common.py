@@ -60,6 +60,7 @@ _TAB_ALIASES: dict[str, tuple[str, ...]] = {
     'results':    ('results',),
     'invested':   ('invested_value_line', 'investedvalueline',
                    'invested value line', 'invested'),
+    'is_demat':   ('is_demat', 'isdemat', 'is demat', 'demat'),
 }
 
 
@@ -173,6 +174,15 @@ def filter_data_to_pf_id(data: dict[str, pd.DataFrame], pf_id: str
                 continue
             df[col] = pd.to_numeric(df[col], errors='coerce')
         out[key] = df
+
+    # is_demat: keep IS_DEMAT as bool, coerce PCT_OF_USER + CURRENT_VALUE.
+    if 'is_demat' in out and not out['is_demat'].empty:
+        df = out['is_demat']
+        for col in df.columns:
+            if col in ('PF_ID', 'IS_DEMAT'):
+                continue
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        out['is_demat'] = df
     return out
 
 
