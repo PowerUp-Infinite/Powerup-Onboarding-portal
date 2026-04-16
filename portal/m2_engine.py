@@ -634,8 +634,9 @@ def do_slide3(prs, q_row, risk_profile, pf_row=None):
         elif shape.name == 'Google Shape;130;p18':
             replace_text(shape, f'{risk_profile} Investor')
 
-        elif shape.name == 'Google Shape;132;p18':
-            # Two shapes share this name: age and SIP step-up
+        elif shape.name in ('Google Shape;132;p18', 'Google Shape;133;p18'):
+            # Shape 132 = age, shape 133 = SIP step-up. (Older templates
+            # had both as ;132;p18 — the text-content check handles both.)
             cur = shape.text_frame.text.strip()
             if 'SIP' in cur or 'Step' in cur or 'step' in cur:
                 if has_stepup:
@@ -2896,6 +2897,25 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
                     q_row = r
                     print(f"  Questionnaire: partial name match '{r[name_col]}'")
                     break
+
+    # Fuzzy fallback — handles spelling variations (e.g. "Sunder Raj" vs "Sundar")
+    if q_row.empty and match_name:
+        from difflib import SequenceMatcher
+        name_col = next((c for c in qdf.columns if c.lower() == "name"), None)
+        if name_col:
+            ml = match_name.lower().strip()
+            best_row, best_score, best_name = None, 0.0, ''
+            for _, r in qdf.iterrows():
+                qn = str(r.get(name_col, '')).strip()
+                if not qn or qn.lower() == 'nan':
+                    continue
+                s = SequenceMatcher(None, ml, qn.lower()).ratio()
+                if s > best_score:
+                    best_score, best_name, best_row = s, qn, r
+            if best_row is not None and best_score >= 0.5:
+                q_row = best_row
+                print(f"  Questionnaire: fuzzy match '{best_name}' "
+                      f"({int(round(best_score * 100))}% similarity)")
 
     if q_row.empty:
         print(f"  WARNING: no questionnaire row for '{customer_name}'")
