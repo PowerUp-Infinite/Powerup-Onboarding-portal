@@ -273,6 +273,11 @@ def read_scheme_category() -> pd.DataFrame:
 def read_base_data() -> pd.DataFrame:
     return _sheet_to_df(MAIN_SPREADSHEET_ID, MainSheets.BASE_DATA)
 
+def read_ratings() -> pd.DataFrame:
+    """Current Apr ratings — overrides POWERRATING/RANK from Scheme_level.
+    Looked up by ISIN in m2_engine.apply_ratings_override()."""
+    return _sheet_to_df(MAIN_SPREADSHEET_ID, MainSheets.RATINGS)
+
 def read_questionnaire() -> pd.DataFrame:
     """Read the questionnaire responses sheet (flat, single tab)."""
     return _sheet_to_df(QUESTIONNAIRE_SPREADSHEET_ID, "Sheet1")
@@ -385,10 +390,119 @@ def get_client_name(pf_id: str) -> Optional[str]:
 # Time-Series Spreadsheet — READ
 # ─────────────────────────────────────────────────────────────
 
-def read_lines() -> pd.DataFrame:
+def _col_letter(n: int) -> str:
+    """0-indexed column number -> A1 letter (0=A, 1=B, ..., 26=AA)."""
+    s = ''
+    n += 1
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def _sheet_to_df_filtered(spreadsheet_id: str, tab: str, key_col: str,
+                          key_val: str) -> pd.DataFrame:
+    """
+    Read only the rows of `tab` where column `key_col` == `key_val`.
+    Avoids materializing the entire sheet in memory — critical for
+    Streamlit Cloud's 1 GB limit when `Lines` has >1M rows.
+
+    Strategy:
+      1. Fetch headers only (row 1).
+      2. Fetch only the key column (A:A or whichever), find row indices
+         whose cell value matches key_val.
+      3. If matches > 0, fetch only those specific rows via batchGet.
+      4. Return a DataFrame with just the matching rows.
+    """
+    svc = get_sheets_service()
+
+    # Step 1: headers
+    hdr_res = svc.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f'{tab}!1:1',
+    ).execute()
+    headers = [str(h).strip() for h in hdr_res.get("values", [[]])[0]]
+    if not headers:
+        return pd.DataFrame()
+    try:
+        key_idx = headers.index(key_col)
+    except ValueError:
+        # Key column doesn't exist — fall back to unfiltered read
+        return _sheet_to_df(spreadsheet_id, tab)
+
+    # Step 2: key column only
+    key_letter = _col_letter(key_idx)
+    key_res = svc.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f'{tab}!{key_letter}2:{key_letter}',
+        majorDimension='COLUMNS',
+    ).execute()
+    col_vals = key_res.get("values", [[]])
+    col_vals = col_vals[0] if col_vals else []
+
+    # Row numbers are 1-indexed; header is row 1, so data starts at row 2.
+    target = str(key_val).strip()
+    matching_rows = [i + 2 for i, v in enumerate(col_vals)
+                     if str(v).strip() == target]
+
+    if not matching_rows:
+        return pd.DataFrame(columns=headers)
+
+    # Step 3: batchGet only matching rows. Collapse contiguous runs into
+    # single A:row:row ranges to minimise request size.
+    last_col = _col_letter(len(headers) - 1)
+    ranges = []
+    run_start = matching_rows[0]
+    prev = run_start
+    for r in matching_rows[1:]:
+        if r == prev + 1:
+            prev = r
+            continue
+        ranges.append(f'{tab}!A{run_start}:{last_col}{prev}')
+        run_start = r
+        prev = r
+    ranges.append(f'{tab}!A{run_start}:{last_col}{prev}')
+
+    batch_res = svc.spreadsheets().values().batchGet(
+        spreadsheetId=spreadsheet_id,
+        ranges=ranges,
+        valueRenderOption="UNFORMATTED_VALUE",
+        dateTimeRenderOption="FORMATTED_STRING",
+    ).execute()
+
+    rows = []
+    for value_range in batch_res.get("valueRanges", []):
+        for r in value_range.get("values", []):
+            rows.append(r + [""] * (len(headers) - len(r)))
+
+    if not rows:
+        return pd.DataFrame(columns=headers)
+
+    df = pd.DataFrame(rows, columns=headers)
+    df = df.replace("", np.nan)
+    df = df.dropna(how="all")
+    df = df.infer_objects(copy=False).replace(np.nan, "")
+    return df
+
+
+def read_lines(pf_id: str | None = None) -> pd.DataFrame:
+    """Read Lines timeseries. If pf_id is provided, only that client's rows
+    are fetched — drastically reduces memory usage on Streamlit Cloud."""
+    if pf_id:
+        return _sheet_to_df_filtered(
+            TIMESERIES_SPREADSHEET_ID, TimeSeriesSheets.LINES, 'PF_ID', pf_id
+        )
     return _sheet_to_df(TIMESERIES_SPREADSHEET_ID, TimeSeriesSheets.LINES)
 
-def read_invested_value_line() -> pd.DataFrame:
+
+def read_invested_value_line(pf_id: str | None = None) -> pd.DataFrame:
+    """Read Invested_Value_Line timeseries. If pf_id is provided, only that
+    client's rows are fetched."""
+    if pf_id:
+        return _sheet_to_df_filtered(
+            TIMESERIES_SPREADSHEET_ID, TimeSeriesSheets.INVESTED_VALUE_LINE,
+            'PF_ID', pf_id,
+        )
     return _sheet_to_df(TIMESERIES_SPREADSHEET_ID, TimeSeriesSheets.INVESTED_VALUE_LINE)
 
 

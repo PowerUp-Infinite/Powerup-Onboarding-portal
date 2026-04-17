@@ -50,8 +50,17 @@ def generate(xlsx_path: str, pf_id: str, customer_name: str,
             f"PF_ID {pf_id!r} not found in the PF_level tab of the uploaded file."
         )
 
-    PROGRESS("[3/5] Fetching questionnaire from Google Sheets...")
+    PROGRESS("[3/5] Fetching questionnaire + ratings from Google Sheets...")
     data['questionnaire'] = fetch_questionnaire()
+    # Current-month POWERRATING/RANK override — keyed by ISIN, applied
+    # inside m2_engine.generate_deck(). Falls back silently if the tab
+    # is missing or the fetch fails.
+    try:
+        import sheets  # type: ignore  # portal/sheets.py via app_config bootstrap
+        data['ratings'] = sheets.read_ratings()
+    except Exception as e:
+        PROGRESS(f"  WARN: ratings fetch failed ({e}) — keeping Scheme_level values.")
+        data['ratings'] = pd.DataFrame()
 
     PROGRESS("[4/5] Downloading categorization + template from Drive...")
     # m2_engine pulls categorization + base deck + risk reward + rating PNGs
