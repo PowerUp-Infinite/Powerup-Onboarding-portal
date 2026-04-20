@@ -403,12 +403,12 @@ def calc_risk_profile(q):
     idx = max(0, min(4, idx + h_adj))
 
     # Step 3: Fall Reaction adjustment
+    # "Invest more" and "Stay invested" both leave risk unchanged; only an
+    # exit response (partial or full) pulls the profile down by one.
     fall = str(q.get('Fall Reaction', '')).lower()
-    if 'invest more' in fall:
-        f_adj = +1
-    elif 'stay invested' in fall or 'stay' in fall:
+    if 'invest more' in fall or 'stay invested' in fall or 'stay' in fall:
         f_adj = 0
-    else:  # exit all / exit partially
+    else:  # exit all / exit partially / anything else
         f_adj = -1
     idx = max(0, min(4, idx + f_adj))
 
