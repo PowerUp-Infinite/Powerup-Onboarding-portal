@@ -194,15 +194,6 @@ def load_data(pf_id: str | None = None):
     # via Google Sheets yet, so default to empty here — do_slide4 falls back to
     # PF_level columns / leaves the slide default in that case.
     data['is_demat']       = pd.DataFrame()
-    # Ratings: current-month POWERRATING/RANK overrides keyed by ISIN.
-    # Applied later in generate_deck() so desktop flow (Excel upload) also
-    # benefits without any extra plumbing.
-    try:
-        data['ratings']    = sheets.read_ratings()
-    except Exception as e:
-        print(f"  WARN: could not load Ratings tab ({e}) — falling back to "
-              f"Scheme_level POWERRATING.")
-        data['ratings']    = pd.DataFrame()
     # Convert numeric columns that come back as strings from Sheets API
     _text_cols = {
         'PF_ID', 'ISIN', 'NAME', 'FUND_NAME', 'FUND_STANDARD_NAME',
@@ -221,51 +212,6 @@ def load_data(pf_id: str | None = None):
     for name, df in data.items():
         print(f"  Loaded {name}: {len(df)} rows, cols={list(df.columns)[:6]}...")
     return data
-
-
-def apply_ratings_override(scheme_df: pd.DataFrame,
-                           ratings_df: pd.DataFrame) -> pd.DataFrame:
-    """Overwrite POWERRATING (+ RANK if present) on scheme_df using ratings_df
-    keyed by ISIN. Returns a new DataFrame. Rows whose ISIN is not in
-    ratings_df keep their original POWERRATING/RANK."""
-    if scheme_df is None or scheme_df.empty:
-        return scheme_df
-    if ratings_df is None or ratings_df.empty or 'ISIN' not in ratings_df.columns:
-        return scheme_df
-    if 'POWERRATING' not in ratings_df.columns:
-        return scheme_df
-
-    lookup = {}
-    for _, r in ratings_df.iterrows():
-        isin = str(r.get('ISIN', '')).strip()
-        if not isin or isin.lower() == 'nan':
-            continue
-        lookup[isin] = {
-            'POWERRATING': str(r.get('POWERRATING', '')).strip(),
-            'RANK': r.get('RANK'),
-        }
-
-    out = scheme_df.copy()
-    n_hit, n_miss = 0, 0
-    for idx, row in out.iterrows():
-        isin = str(row.get('ISIN', '')).strip()
-        hit = lookup.get(isin)
-        if not hit:
-            n_miss += 1
-            continue
-        if hit['POWERRATING']:
-            out.at[idx, 'POWERRATING'] = hit['POWERRATING']
-        if 'RANK' in out.columns and hit['RANK'] is not None and \
-                not (isinstance(hit['RANK'], float) and pd.isna(hit['RANK'])):
-            # Coerce to numeric so we don't cram a string into a float col
-            # (Sheets API returns everything as strings).
-            rank_num = pd.to_numeric(hit['RANK'], errors='coerce')
-            if not pd.isna(rank_num):
-                out.at[idx, 'RANK'] = rank_num
-        n_hit += 1
-    print(f"  Ratings override: {n_hit} schemes matched by ISIN, "
-          f"{n_miss} unmatched (kept Scheme_level value).")
-    return out
 
 
 # ──────────────────────────────────────────────────────────────
@@ -961,15 +907,30 @@ def do_slide4(prs, pf, rg_agg, risk_profile, is_demat_df=None):
             if isinstance(v, (int, float)) and not pd.isna(v):
                 return float(v) != 0.0
             return str(v).strip().lower() in ('true', 'yes', '1', 't', 'y')
+        # Each row specifies ONE side; the other is the complement.
+        #   IS_DEMAT=True, PCT=0.05  → Demat=5%,  SOA=95%
+        #   IS_DEMAT=False, PCT=0.05 → SOA=5%,    Demat=95%
+        # If both True and False rows are present, use each side explicitly.
         mask_true = is_demat_df['IS_DEMAT'].apply(_is_true)
-        demat_frac = float(
+        true_sum = float(
             pd.to_numeric(is_demat_df.loc[mask_true, 'PCT_OF_USER'],
                           errors='coerce').fillna(0).sum()
         )
-        soa_frac = float(
+        false_sum = float(
             pd.to_numeric(is_demat_df.loc[~mask_true, 'PCT_OF_USER'],
                           errors='coerce').fillna(0).sum()
         )
+        if true_sum > 0 and false_sum > 0:
+            demat_frac, soa_frac = true_sum, false_sum
+        elif true_sum > 0:
+            demat_frac = true_sum
+            soa_frac   = max(0.0, 1.0 - demat_frac)
+        elif false_sum > 0:
+            soa_frac   = false_sum
+            demat_frac = max(0.0, 1.0 - soa_frac)
+        else:
+            demat_frac = soa_frac = 0.0
+
         # Convert fractions (0..1) to integer percent here so the downstream
         # _fmt_pct_for_slide doesn't mis-classify a true 100% (fraction=1.0)
         # as "1%". The "fraction vs already-percent" boundary check inside
@@ -2913,13 +2874,6 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
     if pf_row.empty:
         raise ValueError(f"PF_ID '{pf_id}' not found in PF_level sheet.")
     pf_row = pf_row.iloc[0]
-
-    # Apply current Apr rating override onto scheme data (keyed by ISIN).
-    # Runs for BOTH the cloud flow (Sheets) and desktop flow (Excel upload
-    # + ratings fetched separately) — as long as data['ratings'] is present.
-    ratings_df = data.get('ratings', pd.DataFrame())
-    if ratings_df is not None and not ratings_df.empty:
-        data['scheme'] = apply_ratings_override(data['scheme'], ratings_df)
 
     # Match questionnaire row - PF_ID first, then saved name, then exact/partial
     qdf   = data["questionnaire"]

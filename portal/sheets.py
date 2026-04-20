@@ -273,11 +273,6 @@ def read_scheme_category() -> pd.DataFrame:
 def read_base_data() -> pd.DataFrame:
     return _sheet_to_df(MAIN_SPREADSHEET_ID, MainSheets.BASE_DATA)
 
-def read_ratings() -> pd.DataFrame:
-    """Current Apr ratings — overrides POWERRATING/RANK from Scheme_level.
-    Looked up by ISIN in m2_engine.apply_ratings_override()."""
-    return _sheet_to_df(MAIN_SPREADSHEET_ID, MainSheets.RATINGS)
-
 def read_questionnaire() -> pd.DataFrame:
     """Read the questionnaire responses sheet (flat, single tab)."""
     return _sheet_to_df(QUESTIONNAIRE_SPREADSHEET_ID, "Sheet1")

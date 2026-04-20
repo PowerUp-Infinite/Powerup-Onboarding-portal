@@ -62,7 +62,6 @@ class MainSheets:
     INVESTED_VALUE_LINE = "Invested_Value_Line"
     SCHEME_CATEGORY     = "Scheme_Category"
     BASE_DATA           = "BASE_DATA"
-    RATINGS             = "Ratings"
 
 class TimeSeriesSheets:
     LINES               = "Lines"
