@@ -378,66 +378,79 @@ def _match(text, mapping):
 
 def calc_risk_profile(q):
     """
-    4-step risk logic:
-    1. Base from Portfolio Preference return % (15% VeryAgg, 12% Agg, 9% Bal, 6% Con)
-    2. Horizon adjustment: short/medium/medium-to-long -> -1; long-term -> 0
-    3. Fall Reaction: invest more -> +1; stay invested -> 0; exit* -> -1
-    4. Liability management: 'Yes - comfortably' -> 0; 'Just about' -> -1; other struggling -> -1
+    Weighted-scoring risk logic (Product Risk Assessment framework, "Current
+    Tech Shared" sheet, knowledge question removed).
+
+    Total score = sum of (Points * Weight / 10) over 3 questions:
+      Q1 Portfolio Preference (weight 40) — pts 1/2/3/5 -> 4/8/12/20
+      Q2 Investment Horizon   (weight 15) — pts 1/2/3/5 -> 1.5/3/4.5/7.5
+      Q3 Fall Reaction        (weight 40) — pts 1/2/3/5 -> 4/8/12/20
+
+    Score range 9.5-47.5 maps to RISK_SCALE (thresholds scaled from the
+    framework's 5-level mapping by 47.5/50):
+      Very Conservative   [9.5   - 16.15]
+      Conservative        (16.15 - 23.75]
+      Balanced            (23.75 - 32.30]
+      Aggressive          (32.30 - 41.80]
+      Very Aggressive     (41.80 - 47.50]
     """
-    # Step 1: Base index from Portfolio Preference
+    # ── Q1: Portfolio Preference (weight 40) ──
     pref = str(q.get('Portfolio Preference', '')).lower()
-    if '15%' in pref:
-        idx = 4   # Very Aggressive
-    elif '12%' in pref:
-        idx = 3   # Aggressive
-    elif '9%' in pref:
-        idx = 2   # Balanced
-    elif '6%' in pref:
-        idx = 1   # Conservative
+    if 'grow faster' in pref:
+        q1_pts = 5
+    elif 'grow well' in pref:
+        q1_pts = 3
+    elif 'grow slowly' in pref:
+        q1_pts = 2
+    elif 'grow safely' in pref:
+        q1_pts = 1
     else:
-        idx = 2   # Balanced default
-    base = RISK_SCALE[idx]
+        q1_pts = 3   # default → Balanced-ish
+    q1_score = q1_pts * 40 / 10
 
-    # Step 2: Horizon adjustment
-    # Only truly long-term (8+ years) gets h_adj=0 (no change).
-    # "Medium to long-term" must NOT match as long-term — check 'medium' not in horizon first.
+    # ── Q2: Investment Horizon (weight 15) ──
+    # Check "medium to long" before "medium-term" / "long-term" to avoid
+    # substring collisions.
     horizon = str(q.get('Investment Horizon', '')).lower()
-    long_kws = ['more than 7', 'more than 8', 'long-term', 'long term', '8+']
-    is_long = any(k in horizon for k in long_kws) and 'medium' not in horizon
-    h_adj = 0 if is_long else -1
-    idx = max(0, min(4, idx + h_adj))
-
-    # Step 3: Fall Reaction adjustment
-    # "Invest more" and "Stay invested" both leave risk unchanged; only an
-    # exit response (partial or full) pulls the profile down by one.
-    fall = str(q.get('Fall Reaction', '')).lower()
-    if 'invest more' in fall or 'stay invested' in fall or 'stay' in fall:
-        f_adj = 0
-    else:  # exit all / exit partially / anything else
-        f_adj = -1
-    idx = max(0, min(4, idx + f_adj))
-
-    # Step 4: Liability management adjustment
-    #
-    # The three real answers currently in the questionnaire form are:
-    #   "Yes - comfortably"  → has liabilities, managing fine        → 0
-    #   "No I don't foresee" → no liabilities at all                 → 0
-    #   "Just about"         → has liabilities and barely managing   → -1
-    #
-    # Only "Just about" (or equivalent stress wording) downgrades. Matching
-    # by 'yes' / 'comfort' alone misclassified "No I don't foresee" as stress
-    # and incorrectly subtracted 1 from the risk index.
-    liab = str(q.get('Liability Followup Answer', '')).lower()
-    stress_kws = ('just about', 'barely', 'struggl', 'difficult', 'tight', 'hardly')
-    if any(k in liab for k in stress_kws):
-        l_adj = -1
+    if 'medium to long' in horizon or '5-7' in horizon or '5-8' in horizon:
+        q2_pts = 3
+    elif 'more than 7' in horizon or 'more than 8' in horizon or 'long-term' in horizon or 'long term' in horizon:
+        q2_pts = 5
+    elif 'medium-term' in horizon or 'medium term' in horizon or '3-5' in horizon:
+        q2_pts = 2
+    elif 'short-term' in horizon or 'short term' in horizon or 'less than 3' in horizon:
+        q2_pts = 1
     else:
-        # empty / "yes comfortably" / "no I don't foresee" / etc. → no change
-        l_adj = 0
-    idx = max(0, min(4, idx + l_adj))
+        q2_pts = 2   # default
+    q2_score = q2_pts * 15 / 10
 
-    profile = RISK_SCALE[idx]
-    print(f"  Risk: base={base} h_adj={h_adj} f_adj={f_adj} l_adj={l_adj} -> {profile}")
+    # ── Q3: Fall Reaction (weight 40) ──
+    fall = str(q.get('Fall Reaction', '')).lower()
+    if 'invest more' in fall:
+        q3_pts = 5
+    elif 'stay invested' in fall or 'stay' in fall:
+        q3_pts = 3
+    elif 'exit partial' in fall:
+        q3_pts = 2
+    elif 'exit all' in fall or 'exit' in fall:
+        q3_pts = 1
+    else:
+        q3_pts = 3   # default
+
+    q3_score = q3_pts * 40 / 10
+
+    total = q1_score + q2_score + q3_score
+
+    # Map score to RISK_SCALE. Boundaries scale the framework's 5-level
+    # cutoffs by 47.5/50 (Q4 removed). Upper-inclusive brackets.
+    if   total <= 16.15: profile = 'Very Conservative'
+    elif total <= 23.75: profile = 'Conservative'
+    elif total <= 32.30: profile = 'Balanced'
+    elif total <= 41.80: profile = 'Aggressive'
+    else:                profile = 'Very Aggressive'
+
+    print(f"  Risk: Q1={q1_pts}({q1_score}) Q2={q2_pts}({q2_score}) "
+          f"Q3={q3_pts}({q3_score}) total={total} -> {profile}")
     return profile
 
 def get_horizon(text):
