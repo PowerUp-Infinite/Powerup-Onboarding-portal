@@ -50,6 +50,17 @@ def generate(xlsx_path: str, pf_id: str, customer_name: str,
             f"PF_ID {pf_id!r} not found in the PF_level tab of the uploaded file."
         )
 
+    # Sync this client's is_demat rows to the Google Sheet so the cloud/
+    # Streamlit flow renders the same SOA/Demat for future runs. Desktop
+    # still reads is_demat locally from the Excel for THIS run.
+    if not data['is_demat'].empty:
+        try:
+            import sheets  # type: ignore  # portal/sheets.py via app_config
+            PROGRESS("  Syncing Is_demat to Google Sheets...")
+            sheets.upsert_is_demat(data['is_demat'])
+        except Exception as e:
+            PROGRESS(f"  WARN: Is_demat sync skipped ({e}).")
+
     PROGRESS("[3/5] Fetching questionnaire from Google Sheets...")
     data['questionnaire'] = fetch_questionnaire()
 

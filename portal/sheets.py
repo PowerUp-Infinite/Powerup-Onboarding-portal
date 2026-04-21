@@ -745,6 +745,11 @@ def upsert_results(df: pd.DataFrame) -> dict:
 def upsert_scheme_category(df: pd.DataFrame) -> dict:
     return _upsert(MAIN_SPREADSHEET_ID, MainSheets.SCHEME_CATEGORY, df, ["Powerup Broad Category"])
 
+def upsert_is_demat(df: pd.DataFrame) -> dict:
+    # Keyed by (PF_ID, IS_DEMAT) — a PF_ID can have up to two rows,
+    # one for each side of the demat split.
+    return _upsert(MAIN_SPREADSHEET_ID, MainSheets.IS_DEMAT, df, ["PF_ID", "IS_DEMAT"])
+
 
 # ─────────────────────────────────────────────────────────────
 # M3 Reference Spreadsheet — WRITE (monthly refresh, full replace)
@@ -955,6 +960,10 @@ _DATASET_SIGNATURES = [
     (
         {"Powerup Broad Category", "Proposed Sub-Category", "V1 Risk Group L0"},
         MainSheets.SCHEME_CATEGORY, upsert_scheme_category, ["Powerup Broad Category"],
+    ),
+    (
+        {"PF_ID", "IS_DEMAT", "PCT_OF_USER"},
+        MainSheets.IS_DEMAT, upsert_is_demat, ["PF_ID", "IS_DEMAT"],
     ),
     # M3 reference (full replace — no upsert needed)
     ({"ISIN", "FUND_NAME", "AUM", "DAILYNAV"}, M3Sheets.AUM, write_m3_aum, None),
