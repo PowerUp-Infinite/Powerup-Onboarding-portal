@@ -273,6 +273,12 @@ def read_scheme_category() -> pd.DataFrame:
 def read_base_data() -> pd.DataFrame:
     return _sheet_to_df(MAIN_SPREADSHEET_ID, MainSheets.BASE_DATA)
 
+def read_is_demat() -> pd.DataFrame:
+    """SOA/Demat split per PF_ID. Same shape as the 'Is demat' tab in the
+    uploaded Excel — used by do_slide4 to render the SOA % / Demat % fields.
+    Empty DataFrame if the tab is missing or has only a header row."""
+    return _sheet_to_df(MAIN_SPREADSHEET_ID, MainSheets.IS_DEMAT)
+
 def read_questionnaire() -> pd.DataFrame:
     """Read the questionnaire responses sheet (flat, single tab)."""
     return _sheet_to_df(QUESTIONNAIRE_SPREADSHEET_ID, "Sheet1")

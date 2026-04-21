@@ -190,10 +190,15 @@ def load_data(pf_id: str | None = None):
     data['lines']          = sheets.read_lines(pf_id=pf_id) if pf_id else sheets.read_lines()
     data['results']        = sheets.read_results()
     data['invested']       = sheets.read_invested_value_line(pf_id=pf_id) if pf_id else sheets.read_invested_value_line()
-    # is_demat: only present in uploaded Excels (desktop flow). Not available
-    # via Google Sheets yet, so default to empty here — do_slide4 falls back to
-    # PF_level columns / leaves the slide default in that case.
-    data['is_demat']       = pd.DataFrame()
+    # is_demat: SOA/Demat split per PF_ID. Cloud flow reads the 'Is_demat' tab
+    # on the MAIN spreadsheet. Desktop flow overrides this with the uploaded
+    # Excel's 'Is demat' sheet (handled in desktop/workers/m2_worker.py).
+    try:
+        data['is_demat']   = sheets.read_is_demat()
+    except Exception as e:
+        print(f"  WARN: could not load Is_demat tab ({e}) — falling back to "
+              f"PF_level SOA%/Demat% columns.")
+        data['is_demat']   = pd.DataFrame()
     # Convert numeric columns that come back as strings from Sheets API
     _text_cols = {
         'PF_ID', 'ISIN', 'NAME', 'FUND_NAME', 'FUND_STANDARD_NAME',
