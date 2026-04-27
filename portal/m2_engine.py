@@ -3133,8 +3133,17 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
     prs.save(buf)
     buf.seek(0)
 
-    safe = re.sub(r"[^\w\s-]", "", customer_name).strip().replace(" ", "_")
-    filename = f"{safe}_{pf_id[:12]}_deck.pptx"
+    # Filename: PowerUp_Infinite_<First>_<Last>_PR&S_<DDMMYYYY>.pptx
+    from datetime import datetime
+    safe = re.sub(r"[^\w\s-]", "", customer_name).strip()
+    name_parts = safe.split() or [pf_id[:12]]
+    if len(name_parts) == 1:
+        name_token = name_parts[0]
+    else:
+        # First + Last (drop middle names) — keeps the filename short
+        name_token = f"{name_parts[0]}_{name_parts[-1]}"
+    today_str = datetime.now().strftime("%d%m%Y")
+    filename = f"PowerUp_Infinite_{name_token}_PR&S_{today_str}.pptx"
 
     print(f"\n{'='*60}")
     print(f"  DONE  ->  {filename}")
