@@ -313,10 +313,26 @@ def _read_isin_column(ws, count):
 
 
 def _get_masterplan_sheet(wb):
-    """Return the PF_MasterPlan_* sheet if present, else None."""
+    """Return the master plan sheet if present, else None.
+
+    Looks for it in two ways:
+      1. Sheet name starting with 'PF_MasterPlan' (legacy convention).
+      2. Sheet whose A1 cell text is 'Master Transition Plan' (current
+         convention — sheet is often renamed to <ClientName>_transition_plan_*).
+
+    Content-based detection is the durable one — sheet renames have broken
+    name-only detection in the past.
+    """
+    # First pass: legacy name prefix (fast path)
     for name in wb.sheetnames:
         if name.startswith('PF_MasterPlan'):
             return wb[name]
+    # Second pass: identify by content marker in A1
+    for name in wb.sheetnames:
+        ws = wb[name]
+        a1 = ws.cell(row=1, column=1).value
+        if a1 and str(a1).strip() == 'Master Transition Plan':
+            return ws
     return None
 
 
