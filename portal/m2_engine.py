@@ -199,6 +199,14 @@ def load_data(pf_id: str | None = None):
         print(f"  WARN: could not load Is_demat tab ({e}) — falling back to "
               f"PF_level SOA%/Demat% columns.")
         data['is_demat']   = pd.DataFrame()
+    # name_age: USER_ID -> name + age. Used to populate slide 1 / 2 / 3 when
+    # PF_level itself doesn't carry these fields. Desktop flow overrides
+    # via the uploaded Excel's name_age tab (in m2_worker).
+    try:
+        data['name_age']   = sheets.read_name_age()
+    except Exception as e:
+        print(f"  WARN: could not load name_age tab ({e})")
+        data['name_age']   = pd.DataFrame()
     # Convert numeric columns that come back as strings from Sheets API
     _text_cols = {
         'PF_ID', 'ISIN', 'NAME', 'FUND_NAME', 'FUND_STANDARD_NAME',
@@ -718,14 +726,13 @@ def do_slide2(prs, first_name):
 # SLIDE 3 — You at a Glance
 # ──────────────────────────────────────────────────────────────
 
-def do_slide3(prs, q_row, risk_profile, pf_row=None):
+def do_slide3(prs, q_row, risk_profile, pf_row=None, resolved_age=''):
     slide   = prs.slides[2]
     goals   = parse_goals(q_row.get('Goals', ''))
     horizon = get_horizon(q_row.get('Investment Horizon', ''))
-    # Age is left for manual fill by the RM — family-portfolio PF_IDs don't
-    # map 1:1 to individual USER_IDs in the name_age sheet, so any auto
-    # lookup is unreliable and was producing the wrong age.
-    age = ''
+    # Age is resolved upstream in generate_deck (PF_level → name_age → warn).
+    # If empty here, leave the slide-3 age placeholder untouched.
+    age = str(resolved_age or '').strip()
 
     lump_val  = q_row.get('Lumpsum Amount (with Infinite)', 0)
     sip_val   = q_row.get('Monthly SIP Amount (with Infinite)', 0)
@@ -3137,19 +3144,66 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
     prs = Presentation(base_deck_path)
     print(f"  Opened base deck template (from Drive)")
 
-    first_name = customer_name.split()[0] if customer_name else "Client"
+    # ── Resolve client name + age ──────────────────────────────────────────
+    # Lookup order:
+    #   1. PF_level row (Name / Age columns) — authoritative when populated
+    #   2. name_age sheet matched by USER_ID == PF_ID (works for individual
+    #      portfolios where PF_ID is the MFU-style USER_ID; family-portfolio
+    #      PF_IDs like "PF000026" won't match here)
+    #   3. Otherwise: warn and leave the deck placeholders untouched so the
+    #      RM can fill them in manually.
+    resolved_name = ''
+    resolved_age  = ''
+    if pf_row is not None and not pf_row.empty:
+        v = pf_row.get('Name')
+        if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip():
+            resolved_name = str(v).strip()
+        v = pf_row.get('Age')
+        if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip():
+            resolved_age = str(v).strip()
+
+    if (not resolved_name) or (not resolved_age):
+        na_df = data.get('name_age', pd.DataFrame())
+        if na_df is not None and not na_df.empty and 'USER_ID' in na_df.columns:
+            hit = na_df[na_df['USER_ID'].astype(str).str.strip() == str(pf_id).strip()]
+            if not hit.empty:
+                row = hit.iloc[0]
+                if not resolved_name:
+                    n = row.get('NAME') or row.get('Name')
+                    if n is not None and not (isinstance(n, float) and pd.isna(n)) and str(n).strip():
+                        resolved_name = str(n).strip()
+                if not resolved_age:
+                    a = row.get('AGE') or row.get('Age')
+                    if a is not None and not (isinstance(a, float) and pd.isna(a)) and str(a).strip():
+                        resolved_age = str(a).strip()
+
+    if not resolved_name:
+        print(f"  WARNING: no name found for PF_ID '{pf_id}' "
+              f"(checked PF_level + name_age) — slide 1/2 left blank")
+    if not resolved_age:
+        print(f"  WARNING: no age found for PF_ID '{pf_id}' "
+              f"(checked PF_level + name_age) — slide 3 age left blank")
+
+    name_for_slides  = resolved_name or customer_name   # keep customer_name fallback
+    first_name       = name_for_slides.split()[0] if name_for_slides else "Client"
 
     # Process slides (same order as local M2/app.py)
-    # Slide 1 (title) and Slide 2 (welcome) name placeholders are now left
-    # untouched — relationship managers fill them in manually after generation.
-    # Reason: family portfolios use a family PF_ID that doesn't map cleanly
-    # to a single individual's name in the name_age sheet.
-    print("\n[3/9] Slide 1 - Title (name left for manual fill)")
-    print("[4/9] Slide 2 - Welcome (name left for manual fill)")
+    print("\n[3/9] Slide 1 - Title")
+    if resolved_name:
+        do_slide1(prs, resolved_name)
+    else:
+        print("  SKIPPED (no name resolved — fill manually)")
+
+    print("[4/9] Slide 2 - Welcome")
+    if resolved_name:
+        do_slide2(prs, first_name)
+    else:
+        print("  SKIPPED (no name resolved — fill manually)")
 
     print("[5/9] Slide 3 - You at a Glance")
     if not q_row.empty:
-        do_slide3(prs, q_row, risk_profile, pf_row=pf_row)
+        do_slide3(prs, q_row, risk_profile, pf_row=pf_row,
+                  resolved_age=resolved_age)
     else:
         print("  SKIPPED (no questionnaire data)")
 

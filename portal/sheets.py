@@ -279,6 +279,12 @@ def read_is_demat() -> pd.DataFrame:
     Empty DataFrame if the tab is missing or has only a header row."""
     return _sheet_to_df(MAIN_SPREADSHEET_ID, MainSheets.IS_DEMAT)
 
+def read_name_age() -> pd.DataFrame:
+    """Name + age lookup per USER_ID. Used by m2_engine to populate slide 1
+    (title), slide 2 (welcome), and slide 3 (age) when the family-portfolio
+    PF_level row doesn't carry these directly. Empty DataFrame if missing."""
+    return _sheet_to_df(MAIN_SPREADSHEET_ID, MainSheets.NAME_AGE)
+
 def read_questionnaire() -> pd.DataFrame:
     """Read the questionnaire responses sheet.
 

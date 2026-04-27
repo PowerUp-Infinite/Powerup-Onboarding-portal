@@ -63,6 +63,7 @@ class MainSheets:
     SCHEME_CATEGORY     = "Scheme_Category"
     BASE_DATA           = "BASE_DATA"
     IS_DEMAT            = "Is_demat"
+    NAME_AGE            = "name_age"
 
 class TimeSeriesSheets:
     LINES               = "Lines"

@@ -499,7 +499,12 @@ class _BaseTab(ctk.CTkFrame):
 
     @staticmethod
     def _format_client(pid: str, name: str) -> str:
-        return f"{name}  ·  {pid[:12]}…" if len(pid) > 14 else f"{name}  ·  {pid}"
+        # PF_ID first so the user picks by ID — name shown after for context.
+        # Family-portfolio PF_IDs ('PF000026') don't have a clean 1:1 name in
+        # the source data, so leading with the ID is more reliable.
+        if name and name.lower() != 'nan':
+            return f"{pid}  ·  {name}"
+        return pid
 
     def _on_client_changed(self, display_name: str):
         for pid, name in self.clients:

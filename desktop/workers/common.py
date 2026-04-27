@@ -61,6 +61,7 @@ _TAB_ALIASES: dict[str, tuple[str, ...]] = {
     'invested':   ('invested_value_line', 'investedvalueline',
                    'invested value line', 'invested'),
     'is_demat':   ('is_demat', 'isdemat', 'is demat', 'demat'),
+    'name_age':   ('name_age', 'nameage', 'name age', 'name and age'),
 }
 
 
@@ -103,40 +104,60 @@ def parse_uploaded_excel(xlsx_path: str) -> dict[str, pd.DataFrame]:
 
 # ── Client (PF_ID) discovery ─────────────────────────────────
 def list_clients_in_excel(xlsx_path: str) -> list[tuple[str, str]]:
-    """Return [(pf_id, display_name), ...] discovered from the PF_level tab
-    first, then falling back to the Scheme_level tab. Names are read from
-    a 'Name' or 'NAME' column when present; otherwise pf_id is reused."""
+    """Return [(pf_id, display_name), ...] for every PF_ID in the PF_level tab.
+
+    Source of truth is PF_level only — Scheme_level may carry stragglers that
+    don't have a corresponding PF_level row, and including them in the picker
+    causes downstream failures (PF_ID '...' not found in PF_level). The
+    name column on PF_level is optional; if missing/blank, we fall back to
+    the name_age tab matched by USER_ID, then to an empty name (the engine
+    will warn and leave slides 1/2 for manual fill)."""
     data = parse_uploaded_excel(xlsx_path)
 
-    clients: dict[str, str] = {}
+    pf_level = data.get('pf_level', pd.DataFrame())
+    if pf_level.empty or 'PF_ID' not in pf_level.columns:
+        return []
 
-    def _harvest(df: pd.DataFrame) -> None:
-        if df.empty or 'PF_ID' not in df.columns:
-            return
-        # Find a name-ish column
-        name_col = None
-        for c in df.columns:
-            if str(c).strip().lower() in ('name', 'client_name', 'customer_name',
-                                          'investor_name'):
-                name_col = c
-                break
-        for _, row in df.drop_duplicates('PF_ID').iterrows():
-            pid = str(row.get('PF_ID', '')).strip()
-            if not pid or pid.lower() == 'nan':
-                continue
-            nm = ''
-            if name_col:
-                nm = str(row.get(name_col, '')).strip()
-                if nm.lower() == 'nan':
-                    nm = ''
-            if pid not in clients or (not clients[pid] and nm):
-                clients[pid] = nm
+    name_col = next(
+        (c for c in pf_level.columns
+         if str(c).strip().lower() in ('name', 'client_name',
+                                       'customer_name', 'investor_name')),
+        None,
+    )
 
-    _harvest(data.get('pf_level', pd.DataFrame()))
-    _harvest(data.get('scheme', pd.DataFrame()))
+    # Build name_age lookup (USER_ID -> NAME) from the uploaded Excel for the
+    # rows where PF_level doesn't carry a name. Optional — empty if no tab.
+    name_age = data.get('name_age', pd.DataFrame())
+    na_lookup: dict[str, str] = {}
+    if not name_age.empty and 'USER_ID' in name_age.columns:
+        na_name_col = next((c for c in name_age.columns
+                            if c.upper() == 'NAME'), None)
+        if na_name_col:
+            for _, r in name_age.iterrows():
+                uid = str(r.get('USER_ID', '')).strip()
+                nm  = str(r.get(na_name_col, '')).strip()
+                if uid and uid.lower() != 'nan' and nm and nm.lower() != 'nan':
+                    na_lookup[uid] = nm
 
-    return [(pid, name or pid)
-            for pid, name in sorted(clients.items(), key=lambda x: x[1] or x[0])]
+    clients: list[tuple[str, str]] = []
+    for _, row in pf_level.drop_duplicates('PF_ID').iterrows():
+        pid = str(row.get('PF_ID', '')).strip()
+        if not pid or pid.lower() == 'nan':
+            continue
+        nm = ''
+        if name_col:
+            v = row.get(name_col)
+            if v is not None and not (isinstance(v, float) and pd.isna(v)):
+                s = str(v).strip()
+                if s and s.lower() != 'nan':
+                    nm = s
+        if not nm:
+            nm = na_lookup.get(pid, '')
+        clients.append((pid, nm))
+
+    # Sort: rows with names first (alphabetical), then nameless PF_IDs.
+    clients.sort(key=lambda x: (not x[1], x[1] or x[0]))
+    return clients
 
 
 def filter_data_to_pf_id(data: dict[str, pd.DataFrame], pf_id: str
@@ -155,13 +176,15 @@ def filter_data_to_pf_id(data: dict[str, pd.DataFrame], pf_id: str
         else:
             out[key] = df.copy()
 
-    # Numeric coercion (same columns the portal leaves as text)
-    _text_cols = {
-        'PF_ID', 'ISIN', 'NAME', 'FUND_NAME', 'FUND_STANDARD_NAME',
-        'FUND_LEGAL_NAME', 'TYPE', 'POWERRATING', 'DISTRIBUTION_STATUS',
-        'RISK_GROUP_L0', 'UPDATED_SUBCATEGORY', 'UPDATED_BROAD_CATEGORY_GROUP',
-        'BROAD_CATEGORY_GROUP', 'DERIVED_CATEGORY', 'Purchase Mode',
-        'BM', 'DIR_ISIN', 'ALT_ISIN_J', 'DATE',
+    # Numeric coercion (same columns the portal leaves as text). Match
+    # case-insensitively so columns like 'Name' (PF_level) survive too —
+    # otherwise pd.to_numeric turns string names into NaN silently.
+    _text_cols_ci = {
+        'pf_id', 'isin', 'name', 'fund_name', 'fund_standard_name',
+        'fund_legal_name', 'type', 'powerrating', 'distribution_status',
+        'risk_group_l0', 'updated_subcategory', 'updated_broad_category_group',
+        'broad_category_group', 'derived_category', 'purchase mode',
+        'bm', 'dir_isin', 'alt_isin_j', 'date',
     }
     for key in ('pf_level', 'riskgroup', 'scheme', 'results', 'lines', 'invested'):
         if key not in out:
@@ -170,7 +193,7 @@ def filter_data_to_pf_id(data: dict[str, pd.DataFrame], pf_id: str
         if df.empty:
             continue
         for col in df.columns:
-            if col in _text_cols:
+            if str(col).strip().lower() in _text_cols_ci:
                 continue
             df[col] = pd.to_numeric(df[col], errors='coerce')
         out[key] = df
