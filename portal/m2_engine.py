@@ -569,7 +569,14 @@ def get_horizon(text):
 
 def parse_goals(text):
     if pd.isna(text): return []
-    return [g.strip() for g in str(text).split(',') if g.strip()]
+    goals = [g.strip() for g in str(text).split(',') if g.strip()]
+    # 'No fixed goal' (or variants) is a UI placeholder, not an actual goal.
+    # When the client picked it as the only goal, render 'Wealth Appreciation'
+    # on the deck instead. If they picked it alongside real goals, drop it.
+    real_goals = [g for g in goals if 'no fixed goal' not in g.lower()]
+    if not real_goals and goals:
+        return ['Wealth Appreciation']
+    return real_goals
 
 # ──────────────────────────────────────────────────────────────
 # SLIDE MANIPULATION (low-level)
@@ -715,16 +722,10 @@ def do_slide3(prs, q_row, risk_profile, pf_row=None):
     slide   = prs.slides[2]
     goals   = parse_goals(q_row.get('Goals', ''))
     horizon = get_horizon(q_row.get('Investment Horizon', ''))
-    # Age preference order:
-    #   1. PF_level.Age (authoritative — set by the data team)
-    #   2. Questionnaire 'Age' field (fallback for old workflow)
+    # Age is left for manual fill by the RM — family-portfolio PF_IDs don't
+    # map 1:1 to individual USER_IDs in the name_age sheet, so any auto
+    # lookup is unreliable and was producing the wrong age.
     age = ''
-    if pf_row is not None and not (hasattr(pf_row, 'empty') and pf_row.empty):
-        v = pf_row.get('Age')
-        if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip():
-            age = str(v).strip()
-    if not age:
-        age = q_row.get('Age', '') or ''
 
     lump_val  = q_row.get('Lumpsum Amount (with Infinite)', 0)
     sip_val   = q_row.get('Monthly SIP Amount (with Infinite)', 0)
@@ -1249,15 +1250,19 @@ def _update_legend_groups(slide, parts, eq_total):
     the code survives the shape-ID reshuffling that Drive performs on every
     edit of the template. Each label is paired with its nearest % sibling in
     the same group (closest `top` coordinate).
-    Extra non-equity categories (Debt, Gold & Silver, etc.) get cloned rows.
+
+    Empty groups (category with 0% allocation) are REMOVED from the slide
+    entirely — label + dot + pct — so we don't leave orphaned color dots.
+    Extra non-equity categories (Debt, Gold & Silver, Global, Solution) get
+    cloned rows below the equity rows.
     """
     pct_map = {lb: pc for lb, pc, _ in parts}
     col_map = {lb: col for lb, _, col in parts}
 
     KNOWN_LABELS = {'Conservative', 'Balanced', 'Aggressive', 'Equity', 'Hybrid'}
+    eq_labels    = {'Aggressive', 'Balanced', 'Conservative'}
 
-    def _set_pct(pct_sh, cat):
-        val = eq_total if cat == 'Equity' else pct_map.get(cat, 0)
+    def _set_pct(pct_sh, val):
         if val <= 0:
             new_text = ''
         elif val < 1:
@@ -1272,10 +1277,10 @@ def _update_legend_groups(slide, parts, eq_total):
         else:
             para.text = new_text
 
-    def _hide_label(lbl_sh):
-        para = lbl_sh.text_frame.paragraphs[0]
-        if para.runs:
-            para.runs[0].text = ''
+    sp_tree = slide.shapes._spTree
+    groups_to_remove = []
+    hybrid_template_el = None       # deepcopy of Hybrid group (for cloning)
+    last_visible_bottom = 0          # bottom-Y of the last visible legend row
 
     for shape in slide.shapes:
         if shape.shape_type != 6:
@@ -1296,9 +1301,15 @@ def _update_legend_groups(slide, parts, eq_total):
                 label_children.append((t, ch))
             elif '%' in t:
                 pct_children.append(ch)
+        if not label_children:
+            continue
 
-        # Pair each label with its closest (same-row) % sibling
+        # Pair each label with its closest % sibling and update.
+        # Track whether this entire group has any non-zero category (for
+        # decide-to-remove); Equity-bearing groups are never removed.
         used = set()
+        any_nonzero = False
+        has_equity_label = False
         for cat, lbl_sh in label_children:
             best, best_dt = None, 1 << 30
             for ps in pct_children:
@@ -1307,42 +1318,82 @@ def _update_legend_groups(slide, parts, eq_total):
                 dt = abs(ps.top - lbl_sh.top)
                 if dt < best_dt:
                     best_dt, best = dt, ps
-            if best is None:
+            val = eq_total if cat == 'Equity' else pct_map.get(cat, 0)
+            if best is not None:
+                used.add(id(best))
+                _set_pct(best, val)
+            if val > 0:
+                any_nonzero = True
+            if cat == 'Equity':
+                has_equity_label = True
+
+        primary_label = label_children[0][0]
+        if any_nonzero or has_equity_label:
+            # Group stays. Track its bottom for layout of any cloned extras.
+            last_visible_bottom = max(last_visible_bottom,
+                                      shape.top + shape.height)
+        else:
+            # Group is empty. Save Hybrid as the clone template before removing.
+            if primary_label == 'Hybrid' and hybrid_template_el is None:
+                hybrid_template_el = deepcopy(shape._element)
+            groups_to_remove.append(shape)
+
+    # If Hybrid group is non-empty (will stay on slide), still snapshot it as
+    # the clone template — but we'll position extras after Hybrid.
+    if hybrid_template_el is None:
+        for shape in slide.shapes:
+            if shape.shape_type != 6:
                 continue
-            used.add(id(best))
-            _set_pct(best, cat)
-            if cat != 'Equity' and pct_map.get(cat, 0) == 0:
-                _hide_label(lbl_sh)
+            try:
+                for ch in shape.shapes:
+                    if ch.has_text_frame and ch.text_frame.text.strip() == 'Hybrid':
+                        hybrid_template_el = deepcopy(shape._element)
+                        # Hybrid is on slide, so anchor extras below Hybrid.
+                        last_visible_bottom = max(last_visible_bottom,
+                                                  shape.top + shape.height)
+                        break
+            except Exception:
+                continue
+            if hybrid_template_el is not None:
+                break
+
+    # Remove empty groups
+    for grp in groups_to_remove:
+        try:
+            sp_tree.remove(grp._element)
+        except Exception:
+            pass
 
     # ── Clone the "Hybrid" group for extra non-equity categories ─────────────
-    eq_labels = {'Aggressive', 'Balanced', 'Conservative'}
     extra_cats = [(lb, pc, col_map.get(lb, '#808080'))
                   for lb, pc, _ in parts
                   if lb not in eq_labels and lb != 'Hybrid' and pc > 0]
     if not extra_cats:
         return
 
-    # Find the Hybrid group: a GROUP that contains a child whose text == "Hybrid"
-    hybrid_grp = None
-    for shape in slide.shapes:
-        if shape.shape_type != 6:
-            continue
-        try:
-            for ch in shape.shapes:
-                if ch.has_text_frame and ch.text_frame.text.strip() == 'Hybrid':
-                    hybrid_grp = shape
-                    break
-        except Exception:
-            continue
-        if hybrid_grp is not None:
-            break
-    if hybrid_grp is None:
+    if hybrid_template_el is None:
+        print("  Slide 4: WARN no Hybrid template found to clone for extras")
         return
 
-    next_top = hybrid_grp.top + hybrid_grp.height + 80000  # 80000 EMU gap
+    # Build a "fake group shape" wrapper around the template so we can read
+    # its top/height for the position computation.
+    grpSpPr = hybrid_template_el.find(f'{{{NS_P}}}grpSpPr')
+    tmpl_height = 0
+    if grpSpPr is not None:
+        xfrm = grpSpPr.find(f'{{{NS_A}}}xfrm')
+        if xfrm is not None:
+            ext = xfrm.find(f'{{{NS_A}}}ext')
+            if ext is not None:
+                try:
+                    tmpl_height = int(ext.get('cy', 0))
+                except (TypeError, ValueError):
+                    tmpl_height = 0
+
+    next_top = last_visible_bottom + 80000  # 80000 EMU gap below last row
+    hybrid_grp_height = tmpl_height or 200000   # fallback if we can't read it
 
     for label, pct, color in extra_cats:
-        clone_el = deepcopy(hybrid_grp._element)
+        clone_el = deepcopy(hybrid_template_el)
 
         # Reposition the cloned group — only the TOP-LEVEL group's grpSpPr
         # xfrm off.y should be touched. Using .find('.//xfrm') returns the
@@ -1420,7 +1471,7 @@ def _update_legend_groups(slide, parts, eq_total):
             dot_fill[1].set('val', color.lstrip('#'))
 
         slide.shapes._spTree.append(clone_el)
-        next_top += hybrid_grp.height + 80000
+        next_top += hybrid_grp_height + 80000
 
     # ── Move 'Small + Mid Allocation' text below last legend row ─────────────
     # next_top now points past the last clone; last clone bottom = next_top - 80000
@@ -3089,11 +3140,12 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
     first_name = customer_name.split()[0] if customer_name else "Client"
 
     # Process slides (same order as local M2/app.py)
-    print("\n[3/9] Slide 1 - Title")
-    do_slide1(prs, customer_name)
-
-    print("[4/9] Slide 2 - Welcome")
-    do_slide2(prs, first_name)
+    # Slide 1 (title) and Slide 2 (welcome) name placeholders are now left
+    # untouched — relationship managers fill them in manually after generation.
+    # Reason: family portfolios use a family PF_ID that doesn't map cleanly
+    # to a single individual's name in the name_age sheet.
+    print("\n[3/9] Slide 1 - Title (name left for manual fill)")
+    print("[4/9] Slide 2 - Welcome (name left for manual fill)")
 
     print("[5/9] Slide 3 - You at a Glance")
     if not q_row.empty:
