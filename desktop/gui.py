@@ -17,6 +17,7 @@ from __future__ import annotations
 import threading
 import webbrowser
 from pathlib import Path
+import tkinter as tk
 from tkinter import filedialog, messagebox
 from typing import Optional
 
@@ -133,6 +134,192 @@ def Dropdown(parent, **kwargs) -> ctk.CTkOptionMenu:
         corner_radius=Radius.SM,
         **kwargs,
     )
+
+
+class SearchableDropdown(ctk.CTkFrame):
+    """Type-to-filter dropdown for long lists. Same get/set/configure(values=,
+    command=) contract as the plain Dropdown above, so it's a drop-in
+    replacement for CTkOptionMenu when the option count is large.
+
+    Click the field to open a popup with a search box on top + a filtered
+    list below. Typing narrows the list in real time. Click or Enter
+    selects, Escape cancels, click-outside closes."""
+
+    def __init__(self, parent, values=None, command=None, width=200, **kwargs):
+        kwargs.pop('height', None)   # we manage our own height
+        super().__init__(parent, fg_color='transparent', height=INPUT_H, **kwargs)
+        self.grid_propagate(False)
+        self._values = list(values or [])
+        self._command = command
+        self._selected = self._values[0] if self._values else ''
+        self._popup = None
+        self._listbox = None
+        self._search_var = None
+
+        # Trigger looks like a Dropdown — anchored-left button with caret.
+        self._trigger = ctk.CTkButton(
+            self, text=self._selected or '',
+            command=self._toggle_popup,
+            anchor='w',
+            fg_color=Color.BG_INPUT,
+            hover_color=Color.BG_SUBTLE,
+            text_color=Color.TEXT_PRIMARY,
+            border_width=1, border_color=Color.BORDER,
+            corner_radius=Radius.SM,
+            height=INPUT_H,
+            font=Font.BODY,
+            width=width,
+        )
+        self._trigger.pack(fill='both', expand=True)
+
+        if width:
+            self.configure(width=width)
+
+    # Public API — matches CTkOptionMenu enough for our uses
+    def get(self) -> str:
+        return self._selected
+
+    def set(self, value: str) -> None:
+        self._selected = value
+        self._trigger.configure(text=value or '')
+
+    def configure(self, **kwargs):
+        if 'values' in kwargs:
+            self._values = list(kwargs.pop('values'))
+            if self._selected not in self._values and self._values:
+                self.set(self._values[0])
+        if 'command' in kwargs:
+            self._command = kwargs.pop('command')
+        if kwargs:
+            super().configure(**kwargs)
+
+    # Popup management
+    def _toggle_popup(self):
+        if self._popup is not None and self._popup.winfo_exists():
+            self._close_popup()
+        else:
+            self._open_popup()
+
+    def _open_popup(self):
+        # Position popup directly under the trigger, matching width
+        self.update_idletasks()
+        x = self.winfo_rootx()
+        y = self.winfo_rooty() + self.winfo_height()
+        w = max(self.winfo_width(), 280)
+
+        top = ctk.CTkToplevel(self)
+        top.overrideredirect(True)
+        top.attributes('-topmost', True)
+        top.geometry(f'{w}x320+{x}+{y}')
+        top.configure(fg_color=Color.BG_CARD)
+
+        # Search entry on top
+        self._search_var = tk.StringVar()
+        search = ctk.CTkEntry(
+            top, textvariable=self._search_var,
+            placeholder_text='Type to filter…',
+            fg_color=Color.BG_INPUT, border_color=Color.BORDER,
+            text_color=Color.TEXT_PRIMARY, height=INPUT_H,
+            font=Font.BODY,
+        )
+        search.pack(fill='x', padx=Space.SM, pady=(Space.SM, Space.XS))
+
+        # Listbox of options (use tk.Listbox — fast for 100+ items, themed
+        # with the card background to look consistent with the rest of UI)
+        listbox = tk.Listbox(
+            top, activestyle='none',
+            bg=Color.BG_CARD, fg=Color.TEXT_PRIMARY,
+            selectbackground=Color.BG_SUBTLE,
+            selectforeground=Color.TEXT_PRIMARY,
+            highlightthickness=0, borderwidth=0,
+            font=('Segoe UI', 10),
+        )
+        listbox.pack(fill='both', expand=True, padx=Space.SM, pady=(0, Space.SM))
+        self._listbox = listbox
+        self._popup = top
+
+        # Initial fill
+        self._refresh_list('')
+
+        # Bindings
+        self._search_var.trace_add(
+            'write', lambda *_: self._refresh_list(self._search_var.get()))
+        search.bind('<Return>',  lambda _e: self._pick_first())
+        search.bind('<Down>',    lambda _e: (listbox.focus_set(),
+                                             listbox.selection_set(0)))
+        search.bind('<Escape>',  lambda _e: self._close_popup())
+        listbox.bind('<Double-Button-1>', lambda _e: self._pick_selected())
+        listbox.bind('<Return>', lambda _e: self._pick_selected())
+        listbox.bind('<Escape>', lambda _e: self._close_popup())
+        top.bind('<FocusOut>',   self._maybe_close)
+
+        # Focus the search box so the user can immediately start typing
+        search.after(50, search.focus_set)
+
+    def _refresh_list(self, query: str):
+        if not self._listbox:
+            return
+        q = query.lower().strip()
+        self._listbox.delete(0, 'end')
+        for v in self._values:
+            if not q or q in str(v).lower():
+                self._listbox.insert('end', v)
+        # Pre-select first row so Enter immediately works
+        if self._listbox.size() > 0:
+            self._listbox.selection_clear(0, 'end')
+            self._listbox.selection_set(0)
+
+    def _pick_first(self):
+        if self._listbox and self._listbox.size() > 0:
+            value = self._listbox.get(0)
+            self._commit(value)
+
+    def _pick_selected(self):
+        if not self._listbox:
+            return
+        sel = self._listbox.curselection()
+        if not sel:
+            return
+        self._commit(self._listbox.get(sel[0]))
+
+    def _commit(self, value: str):
+        self.set(value)
+        self._close_popup()
+        if self._command:
+            try:
+                self._command(value)
+            except Exception:
+                pass
+
+    def _maybe_close(self, _event):
+        # Closing on focus-out fires while clicking inside our own popup, so
+        # check whether focus moved outside before destroying.
+        if not self._popup:
+            return
+        try:
+            new_focus = self._popup.focus_get()
+            if new_focus is None:
+                self._close_popup()
+                return
+            # If focus is still on a descendant of the popup, leave it open.
+            w = new_focus
+            while w is not None:
+                if w is self._popup:
+                    return
+                w = w.master
+            self._close_popup()
+        except Exception:
+            self._close_popup()
+
+    def _close_popup(self):
+        if self._popup is not None:
+            try:
+                self._popup.destroy()
+            except Exception:
+                pass
+        self._popup = None
+        self._listbox = None
+        self._search_var = None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -477,7 +664,7 @@ class M2Tab(_BaseTab):
         MutedLabel(parent, text="Questionnaire").grid(
             row=0, column=0, padx=(0, Space.MD), sticky="w",
         )
-        self.q_dropdown = Dropdown(
+        self.q_dropdown = SearchableDropdown(
             parent, values=[self._Q_LOADING], command=self._on_q_selected,
             width=420,
         )
