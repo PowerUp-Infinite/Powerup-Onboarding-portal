@@ -443,15 +443,126 @@ def calc_risk_profile(q):
 
     # Map score to RISK_SCALE. Boundaries scale the framework's 5-level
     # cutoffs by 47.5/50 (Q4 removed). Upper-inclusive brackets.
-    if   total <= 16.15: profile = 'Very Conservative'
-    elif total <= 23.75: profile = 'Conservative'
-    elif total <= 32.30: profile = 'Balanced'
-    elif total <= 41.80: profile = 'Aggressive'
-    else:                profile = 'Very Aggressive'
+    if   total <= 16.15: stage1_idx = 0
+    elif total <= 23.75: stage1_idx = 1
+    elif total <= 32.30: stage1_idx = 2
+    elif total <= 41.80: stage1_idx = 3
+    else:                stage1_idx = 4
+    stage1 = RISK_SCALE[stage1_idx]
+
+    # Stage 2 — apply demographic attitude adjustment (Product Risk Assessment
+    # framework, "Attitude Adjustment" sheet). Downgrades and caps based on
+    # age, work state, income source, liability stress, and SWP need.
+    final_idx, delta, flag = _apply_attitude_adjustment(stage1_idx, q)
+    final = RISK_SCALE[final_idx]
 
     print(f"  Risk: Q1={q1_pts}({q1_score}) Q2={q2_pts}({q2_score}) "
-          f"Q3={q3_pts}({q3_score}) total={total} -> {profile}")
-    return profile
+          f"Q3={q3_pts}({q3_score}) total={total} -> Stage1={stage1}")
+    if delta or flag or final_idx != stage1_idx:
+        print(f"        Stage2 adjustment: delta={delta:+d} "
+              f"flag={flag or '-'} -> Final={final}")
+    return final
+
+
+# ──────────────────────────────────────────────────────────────
+# STAGE 2 — Attitude adjustment helpers
+# ──────────────────────────────────────────────────────────────
+
+def _age_band(age_str):
+    s = str(age_str or '').strip()
+    if '<35' in s or 'less than 35' in s.lower():
+        return 'young'
+    if '36' in s and '45' in s:
+        return 'mid'
+    if '46' in s and '55' in s:
+        return 'pre_ret'
+    if '56' in s:
+        return 'post_ret'
+    return 'mid'   # safe default
+
+def _work_state(emp_str):
+    s = str(emp_str or '').lower()
+    # 'Retired early' / 'Retired' / 'Retired already' all -> retired.
+    # 'Soon to be Retiring' / 'Actively Working' -> still working.
+    if 'retired' in s and 'soon' not in s:
+        return 'retired'
+    return 'working'
+
+def _income_state(inc_str):
+    s = str(inc_str or '').lower()
+    if 'no' in s and ('income' in s or 'regular' in s or 'source' in s):
+        return 'no_income'
+    if 'active' in s:    # covers 'Active income only' AND 'Active + Passive'
+        return 'active'
+    if 'pension' in s or 'passive' in s:
+        return 'pension_passive'
+    return 'active'   # safe default
+
+def _liab_stress(liab_str):
+    s = str(liab_str or '').lower()
+    return any(k in s for k in
+               ('just about', 'barely', 'struggl', 'difficult', 'tight', 'hardly'))
+
+def _swp_need(q, work_state):
+    """SWP need = Expenses > Income for retired clients."""
+    if work_state != 'retired':
+        return False
+    inc = q.get('Ret: Monthly Income') or q.get('PostRet: Passive+Pension Income') or 0
+    exp = q.get('Ret: Monthly Expenses') or q.get('PostRet: Living Expenses') or 0
+    try:
+        inc = float(inc) if not pd.isna(inc) else 0
+        exp = float(exp) if not pd.isna(exp) else 0
+    except (TypeError, ValueError):
+        return False
+    return exp > inc and (inc + exp) > 0
+
+def _apply_attitude_adjustment(stage1_idx, q):
+    """
+    Apply the Attitude Adjustment matrix (Product Risk Assessment framework).
+    Returns (final_idx, delta, flag) where:
+      final_idx  : 0..4 in RISK_SCALE
+      delta      : raw shift before clamping (-2, -1, or 0)
+      flag       : 'SWP', 'Annuity', or None — product recommendation tag
+    """
+    age    = _age_band(q.get('Age'))
+    work   = _work_state(q.get('Employment Status'))
+    inc    = _income_state(q.get('Income Source'))
+    stress = _liab_stress(q.get('Liability Followup Answer'))
+    swp    = _swp_need(q, work)
+
+    delta = 0
+    flag  = None
+    floor_idx   = 1   # Conservative — universal floor for downgrades
+    ceiling_idx = 4   # Very Aggressive — default
+
+    # Post-retirement (56+) clients are capped at Aggressive — never Very Aggr
+    if age == 'post_ret':
+        ceiling_idx = 3
+
+    if work == 'working':
+        # Working clients: liability stress is the only adjustment factor.
+        delta = -1 if stress else 0
+    elif work == 'retired':
+        if inc == 'no_income':
+            # Retired with no income — Annuity recommendation for 46+.
+            delta = -1 if stress else 0
+            if age in ('pre_ret', 'post_ret'):
+                flag = 'Annuity'
+        elif inc in ('pension_passive', 'active'):
+            # Retired with pension / passive income.
+            if swp:
+                delta = -2 if stress else -1
+            else:
+                delta = -1 if stress else 0
+            # SWP flag: always for post-ret with retirement income;
+            #           pre-ret only when actual SWP need is present.
+            if age == 'post_ret':
+                flag = 'SWP'
+            elif age == 'pre_ret' and swp:
+                flag = 'SWP'
+
+    final_idx = max(floor_idx, min(ceiling_idx, stage1_idx + delta))
+    return final_idx, delta, flag
 
 def get_horizon(text):
     return _match(text, HORIZON_DISPLAY) or str(text)
