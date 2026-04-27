@@ -280,8 +280,20 @@ def read_is_demat() -> pd.DataFrame:
     return _sheet_to_df(MAIN_SPREADSHEET_ID, MainSheets.IS_DEMAT)
 
 def read_questionnaire() -> pd.DataFrame:
-    """Read the questionnaire responses sheet (flat, single tab)."""
-    return _sheet_to_df(QUESTIONNAIRE_SPREADSHEET_ID, "Sheet1")
+    """Read the questionnaire responses sheet.
+
+    The tab name has changed historically (Sheet1 -> All Responses -> ...).
+    Try known names in priority order, then fall back to the first tab.
+    """
+    candidates = ('All Responses', 'Form Responses 1', 'Sheet1', 'Responses')
+    svc = get_sheets_service()
+    meta = svc.spreadsheets().get(
+        spreadsheetId=QUESTIONNAIRE_SPREADSHEET_ID
+    ).execute()
+    available = [s['properties']['title'] for s in meta.get('sheets', [])]
+    tab = next((c for c in candidates if c in available),
+               available[0] if available else 'Sheet1')
+    return _sheet_to_df(QUESTIONNAIRE_SPREADSHEET_ID, tab)
 
 
 # ─────────────────────────────────────────────────────────────
