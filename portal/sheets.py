@@ -752,6 +752,29 @@ def upsert_pf_level(df: pd.DataFrame) -> dict:
     return _upsert(MAIN_SPREADSHEET_ID, MainSheets.PF_LEVEL, df, ["PF_ID"])
 
 def upsert_scheme_level(df: pd.DataFrame) -> dict:
+    # A Scheme_level upload is a COMPLETE snapshot for the PF_IDs in the new
+    # data — schemes the client no longer holds shouldn't survive from the
+    # last upload. The plain (PF_ID, ISIN) upsert preserved any old row
+    # whose ISIN wasn't in the new data, leading to stale arbitrage / dust
+    # schemes appearing on M1 reports forever.
+    #
+    # Fix: for every PF_ID present in the new data, wipe its existing rows
+    # before doing the upsert. Other PF_IDs are untouched.
+    if not df.empty and 'PF_ID' in df.columns:
+        pf_ids_in_upload = set(
+            df['PF_ID'].astype(str).str.strip().dropna().unique()
+        )
+        if pf_ids_in_upload:
+            existing = _sheet_to_df(MAIN_SPREADSHEET_ID, MainSheets.SCHEME_LEVEL)
+            if not existing.empty and 'PF_ID' in existing.columns:
+                ex_pf = existing['PF_ID'].astype(str).str.strip()
+                keep = existing[~ex_pf.isin(pf_ids_in_upload)]
+                if len(keep) < len(existing):
+                    print(f"  Scheme_level: purging "
+                          f"{len(existing) - len(keep)} stale rows for "
+                          f"{len(pf_ids_in_upload)} PF_ID(s) before re-upsert")
+                    _df_to_sheet(MAIN_SPREADSHEET_ID,
+                                 MainSheets.SCHEME_LEVEL, keep)
     return _upsert(MAIN_SPREADSHEET_ID, MainSheets.SCHEME_LEVEL, df, ["PF_ID", "ISIN"])
 
 def upsert_riskgroup_level(df: pd.DataFrame) -> dict:
