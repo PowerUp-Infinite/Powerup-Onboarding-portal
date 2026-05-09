@@ -118,26 +118,45 @@ def _get_rating_image(key):
 # resolves image paths lazily through Drive instead of reading from disk.
 RATING_IMAGES = {'IN_FORM', 'ON_TRACK', 'OUT_OF_FORM', 'OFF_TRACK'}
 
-# Pie-chart colours — taken directly from base deck legend shapes
+# Pie-chart colours — taken directly from base deck legend shapes.
+# Two naming conventions for risk groups coexist in the data:
+#   Old: '1) Aggressive' / '2) Balanced' / '3) Conservative' / 'Debt Like'
+#   New: '1) High Risk'  / '2) Medium Risk' / '3) Low Risk'  / 'Debt-Like'
+# Both must map to the same display names + colours.
 CHART_COLORS = {
-    '1) Aggressive':   '#2E8AE5',
-    '2) Balanced':     '#4E9EED',
-    '3) Conservative': '#6DB0F2',
-    'Hybrid':          '#FFE2BF',
-    'Debt Like':       '#EBF2F2',  # light mint/seafoam — from PowerUp_Base_Deck legend
-    'Gold & Silver':   '#F7CB88',  # golden amber      — from PowerUp_Base_Deck legend
-    'Global':          '#FFC7B4',  # salmon/peach-pink  — from PowerUp_Base_Deck legend
-    'Solution':        '#CABAF3',  # lavender           — from PowerUp_Base_Deck legend
+    # Equity sub-categories — old names
+    '1) Aggressive':    '#2E8AE5',
+    '2) Balanced':      '#4E9EED',
+    '3) Conservative':  '#6DB0F2',
+    # Equity sub-categories — new names
+    '1) High Risk':     '#2E8AE5',
+    '2) Medium Risk':   '#4E9EED',
+    '3) Low Risk':      '#6DB0F2',
+    # Other categories
+    'Hybrid':           '#FFE2BF',
+    'Debt Like':        '#EBF2F2',  # light mint/seafoam — from PowerUp_Base_Deck legend
+    'Debt-Like':        '#EBF2F2',  # post-rename variant
+    'Gold & Silver':    '#F7CB88',  # golden amber      — from PowerUp_Base_Deck legend
+    'Global':           '#FFC7B4',  # salmon/peach-pink  — from PowerUp_Base_Deck legend
+    'Solution':         '#CABAF3',  # lavender           — from PowerUp_Base_Deck legend
 }
 CHART_LABELS = {
-    '1) Aggressive':   'Aggressive',
-    '2) Balanced':     'Balanced',
-    '3) Conservative': 'Conservative',
-    'Hybrid':          'Hybrid',
-    'Gold & Silver':   'Gold & Silver',
-    'Debt Like':       'Debt',
-    'Solution':        'Solution',
-    'Global':          'Global',
+    # Equity sub-categories — old names
+    '1) Aggressive':    'Aggressive',
+    '2) Balanced':      'Balanced',
+    '3) Conservative':  'Conservative',
+    # Equity sub-categories — new names (collapsed to the same display label
+    # so the existing slide-4 legend template still matches)
+    '1) High Risk':     'Aggressive',
+    '2) Medium Risk':   'Balanced',
+    '3) Low Risk':      'Conservative',
+    # Other categories
+    'Hybrid':           'Hybrid',
+    'Gold & Silver':    'Gold & Silver',
+    'Debt Like':        'Debt',
+    'Debt-Like':        'Debt',
+    'Solution':         'Solution',
+    'Global':           'Global',
 }
 
 # Risk profile scale (index 0..4)
