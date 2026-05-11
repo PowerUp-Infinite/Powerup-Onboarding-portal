@@ -66,10 +66,17 @@ def _download_drive_file(file_id, filename, export_mime=None):
     drive = get_drive_service()
 
     buf = BytesIO()
+    # Pass supportsAllDrives so files living inside a Shared Drive are
+    # accessible. Without this flag, the API returns 404 on Shared Drive
+    # files even when the service account has been granted access.
     if export_mime:
-        request = drive.files().export_media(fileId=file_id, mimeType=export_mime)
+        request = drive.files().export_media(
+            fileId=file_id, mimeType=export_mime,
+        )
     else:
-        request = drive.files().get_media(fileId=file_id)
+        request = drive.files().get_media(
+            fileId=file_id, supportsAllDrives=True,
+        )
     downloader = MediaIoBaseDownload(buf, request)
     done = False
     while not done:

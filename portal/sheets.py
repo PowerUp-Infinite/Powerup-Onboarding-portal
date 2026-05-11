@@ -904,7 +904,8 @@ def export_drive_file_as_pdf(file_id: str) -> BytesIO:
     request = drive.files().export_media(
         fileId=file_id,
         mimeType="application/pdf",
-    )
+    )   # export_media itself doesn't accept supportsAllDrives; access is
+        # determined by the underlying sharing on the file.
     from googleapiclient.http import MediaIoBaseDownload
     buf = BytesIO()
     downloader = MediaIoBaseDownload(buf, request)
@@ -950,11 +951,15 @@ def cleanup_old_outputs(max_age_days: int = 7) -> dict[str, int]:
                     fields="nextPageToken, files(id, name, createdTime)",
                     pageSize=100,
                     pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
                 ).execute()
 
                 for f in resp.get("files", []):
                     try:
-                        drive.files().delete(fileId=f["id"]).execute()
+                        drive.files().delete(
+                            fileId=f["id"], supportsAllDrives=True,
+                        ).execute()
                         deleted[key] += 1
                     except Exception:
                         pass  # skip files we can't delete (permissions, etc.)
