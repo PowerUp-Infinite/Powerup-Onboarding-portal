@@ -429,13 +429,22 @@ def read_excel(excel_path):
 # DECK WRITER — writes data into a copy of the template PowerPoint
 # ──────────────────────────────────────────────────────────────
 
-# Risk-group name aliases — some client Excels use shorthand like 'S&G' instead of
-# 'Gold & Silver'. Normalise at every point we read RISK_GROUP_L0.
+# Risk-group name aliases — normalise at every point we read RISK_GROUP_L0.
+# Some client Excels use shorthand like 'S&G' instead of 'Gold & Silver'.
+# The data team also recently renamed the equity sub-groups from
+# 'N) Aggressive/Balanced/Conservative' to 'N) High/Medium/Low Risk' — map
+# the new names back to the legacy canonical keys so all the downstream
+# lookup tables (RG_DISPLAY, SIP_TEMPLATE, CORPUS_TEMPLATE, RG_LABEL1) keep
+# working without duplication.
 _RG_NORMALIZE = {
-    'S&G':          'Gold & Silver',
-    'Gold':         'Gold & Silver',
-    'Gold&Silver':  'Gold & Silver',
-    'Debt like':    'Debt Like',
+    'S&G':              'Gold & Silver',
+    'Gold':             'Gold & Silver',
+    'Gold&Silver':      'Gold & Silver',
+    'Debt like':        'Debt Like',
+    'Debt-Like':        'Debt Like',
+    '1) High Risk':     '1) Aggressive',
+    '2) Medium Risk':   '2) Balanced',
+    '3) Low Risk':      '3) Conservative',
 }
 
 def _normalize_rg(rg):
@@ -893,7 +902,7 @@ def _group_sip_schemes(section4):
             continue
         if not (_get_val(row, sip_amt_key, 'SIP Amount', 'SIP Allocation Amount') or 0):
             continue
-        rg = row.get('RISK_GROUP_L0', '')
+        rg = _normalize_rg(row.get('RISK_GROUP_L0', ''))
         sub = row.get('UPDATED_SUBCATEGORY', '')
         groups.setdefault(rg, OrderedDict()).setdefault(sub, []).append(row)
     return groups, sip_amt_key
