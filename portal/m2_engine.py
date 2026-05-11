@@ -3090,6 +3090,16 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
 
     # Match questionnaire row - PF_ID first, then saved name, then exact/partial
     qdf   = data["questionnaire"]
+    # If a client filled the questionnaire more than once, prefer the most
+    # recent submission. Sort by Timestamp DESC up-front so every subsequent
+    # lookup (.iloc[0] or first-match-in-iterrows) naturally picks the latest.
+    ts_col = next((c for c in qdf.columns if c.lower() == 'timestamp'), None)
+    if ts_col and not qdf.empty:
+        ts_parsed = pd.to_datetime(qdf[ts_col], errors='coerce',
+                                   format='mixed', dayfirst=False)
+        qdf = qdf.assign(_ts_sort=ts_parsed) \
+                 .sort_values('_ts_sort', ascending=False, na_position='last') \
+                 .drop(columns='_ts_sort')
     q_row = pd.Series(dtype=object)
     match_name = questionnaire_name or customer_name
 
