@@ -221,7 +221,8 @@ def detect_sections(ws):
     # Identify s2 (action master) vs s4 (ideal portfolio) from FUND_NAME rows
     # s4 has columns like "Allocation M1", "Buy Value Amount", "SIP Allocation Amount"
     # s2 has columns like "FOLIO_NUMBER", "TOTAL_UNITS", "Sell Plan"
-    _S4_MARKERS = {"Allocation M1", "Buy Value Amount", "SIP Allocation Amount"}
+    _S4_MARKERS = {"Allocation M1", "Allocation D0",
+                   "Buy Value Amount", "SIP Allocation Amount"}
     _S2_MARKERS = {"FOLIO_NUMBER", "TOTAL_UNITS", "TOTAL_VALUE"}
 
     s2_candidates = []
@@ -611,9 +612,7 @@ _S4_CUMM_BUY_COL = {
     'D150': 'Cummulative Buy Amount at D150',
 }
 
-# New-format column names (M1-M6 milestones, direct ideal-allocation in s3)
-# Section4 per-scheme ideal allocation at each milestone (new format).
-# These are the actual values to SUM by risk group for the transition table.
+# New-format column names (M1-M6 milestone suffixes — first rename)
 _S4_ALLOC_COLS = {
     'D0':   'Allocation M1',
     'D30':  'Allocation M2',
@@ -631,6 +630,26 @@ _S4_CUMM_BUY_COL_NEW = {
     'D150': 'Cumm Buy Amount in M6',
 }
 
+# Newest-format column names (D0-D150 milestone suffixes — current data team
+# convention). Same milestones as M-format but the column-name suffix uses
+# the D-milestone notation directly.
+_S4_ALLOC_COLS_D = {
+    'D0':   'Allocation D0',
+    'D30':  'Allocation D30',
+    'D60':  'Allocation D60',
+    'D90':  'Allocation D90',
+    'D120': 'Allocation D120',
+    'D150': 'Allocation D150',
+}
+_S4_CUMM_BUY_COL_D = {
+    'D0':   'Cumm Buy Amount in D0',
+    'D30':  'Cumm Buy Amount in D30',
+    'D60':  'Cumm Buy Amount in D60',
+    'D90':  'Cumm Buy Amount in D90',
+    'D120': 'Cumm Buy Amount in D120',
+    'D150': 'Cumm Buy Amount in D150',
+}
+
 
 def _get_val(row, *keys):
     """Return the first non-None value found under any of the given keys."""
@@ -644,15 +663,39 @@ def _get_val(row, *keys):
 def _detect_s4_schema(section4):
     """
     Inspect a section4 row to determine which column names are in use.
-    Returns a dict with keys: corpus_pct, sip_amount, buy_value, cum_buy.
+    Three milestone-suffix variants must be supported:
+      * D-format ('Allocation D0', 'Cumm Buy Amount in D0', ...) — newest
+      * M-format ('Allocation M1', 'Cumm Buy Amount in M1', ...) — middle
+      * legacy  ('Cummulative Buy Amount at D0', no Allocation cols)
+    Returns a dict with keys: corpus_pct, sip_amount, buy_value, cum_buy, alloc_cols.
+    `alloc_cols` is None for the legacy format (no per-milestone Allocation column).
     """
     sample = next((r for r in section4 if not r.get('__grand_total__')), {})
-    new = 'Cumm Buy Amount in M1' in sample
+    if 'Allocation D0' in sample or 'Cumm Buy Amount in D0' in sample:
+        # Newest: D-suffix milestone columns
+        return {
+            'corpus_pct': 'Total Allocation % of PF',
+            'sip_amount': 'SIP Allocation Amount',
+            'buy_value':  'Buy Value Amount',
+            'cum_buy':    _S4_CUMM_BUY_COL_D,
+            'alloc_cols': _S4_ALLOC_COLS_D,
+        }
+    if 'Cumm Buy Amount in M1' in sample or 'Allocation M1' in sample:
+        # New: M-suffix milestone columns
+        return {
+            'corpus_pct': 'Total Allocation % of PF',
+            'sip_amount': 'SIP Allocation Amount',
+            'buy_value':  'Buy Value Amount',
+            'cum_buy':    _S4_CUMM_BUY_COL_NEW,
+            'alloc_cols': _S4_ALLOC_COLS,
+        }
+    # Legacy
     return {
-        'corpus_pct': 'Total Allocation % of PF' if new else 'Total Value as % of PF',
-        'sip_amount':  'SIP Allocation Amount'    if new else 'SIP Amount',
-        'buy_value':   'Buy Value Amount'          if new else 'Buy Value',
-        'cum_buy': _S4_CUMM_BUY_COL_NEW if new else _S4_CUMM_BUY_COL,
+        'corpus_pct': 'Total Value as % of PF',
+        'sip_amount': 'SIP Amount',
+        'buy_value':  'Buy Value',
+        'cum_buy':    _S4_CUMM_BUY_COL,
+        'alloc_cols': None,
     }
 
 
@@ -1062,15 +1105,18 @@ def _build_transition_data(section3, section4, section1=None):
     gt1 = next((r for r in (section1 or []) if r.get('__grand_total__')), {})
     total_pfv = gt1.get('Total Selected Value') or 0
 
-    # Check if section4 has Allocation M1-M6 (new format)
-    sample_s4 = next((r for r in section4 if not r.get('__grand_total__')), {})
-    has_alloc_cols = 'Allocation M1' in sample_s4
+    # Check if section4 carries per-milestone Allocation columns. Both
+    # 'Allocation M1' (older new-format) and 'Allocation D0' (current data
+    # team naming) are valid — _detect_s4_schema picks the right map.
+    s4_schema = _detect_s4_schema(section4)
+    alloc_cols = s4_schema.get('alloc_cols')
+    has_alloc_cols = alloc_cols is not None
 
     if has_alloc_cols:
         # =================================================================
         # NEW FORMAT — everything from section4
         #   Current  = sum(Current Value Amount)       per RISK_GROUP_L0
-        #   Ideal Dx = sum(Allocation Mx)              per RISK_GROUP_L0
+        #   Ideal Dx = sum(Allocation [M1..M6] / [D0..D150])  per RISK_GROUP_L0
         # =================================================================
         rg_alloc_s4   = {}   # {rg: {'D0': total, 'D30': total, ...}}
         rg_current_s4 = {}   # {rg: sum(Current Value Amount)}
@@ -1083,7 +1129,7 @@ def _build_transition_data(section3, section4, section1=None):
                 continue
             cur = row.get('Current Value Amount') or 0
             rg_current_s4[rg] = rg_current_s4.get(rg, 0.0) + cur
-            for d, col in _S4_ALLOC_COLS.items():
+            for d, col in alloc_cols.items():
                 val = row.get(col) or 0
                 rg_alloc_s4.setdefault(rg, {})
                 rg_alloc_s4[rg][d] = rg_alloc_s4[rg].get(d, 0.0) + val
