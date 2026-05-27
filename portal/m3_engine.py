@@ -455,11 +455,18 @@ def _normalize_rg(rg):
 def _format_subcategory(sub):
     """Convert subcategory codes to readable text.
     Uses SUBCATEGORY_DISPLAY if available, otherwise converts
-    'SOME_THING_NAME' → 'Some Thing Name'."""
+    'SOME_THING_NAME' → 'Some Thing Name'.
+
+    Always returns a string — None/blank/NaN inputs become ''. Downstream
+    code concatenates this into table cells (`indent + name`), so returning
+    None would raise TypeError."""
     if sub in SUBCATEGORY_DISPLAY:
         return SUBCATEGORY_DISPLAY[sub]
-    if not sub:
-        return sub
+    if sub is None or sub == '' or (isinstance(sub, float) and sub != sub):
+        return ''
+    sub = str(sub)
+    if not sub.strip():
+        return ''
     # Generic: replace underscores with spaces, title-case
     return sub.replace('_', ' ').title()
 
@@ -1050,7 +1057,11 @@ def populate_slide4(prs, slide4_idx, section4):
         indent = _S4_INDENT.get(rd.get('level', 0), '')
         pct_val = round(rd['pct'] * 100, 1)
         alloc = f"{format_inr(rd['amount'])} | {pct_val:g}%"
-        set_cell_text(row.cells[0], indent + rd['name'])
+        # Defensive: rd['name'] should always be a string but legacy data
+        # paths have occasionally produced None — coerce so concatenation
+        # never crashes.
+        name_txt = str(rd['name']) if rd.get('name') is not None else ''
+        set_cell_text(row.cells[0], indent + name_txt)
         set_cell_text(row.cells[1], indent + alloc)
         set_cell_text(row.cells[2], indent + str(rd['count']))
 
