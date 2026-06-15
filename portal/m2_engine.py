@@ -1013,31 +1013,38 @@ def do_slide4(prs, pf, rg_agg, risk_profile, is_demat_df=None):
             replace_text(risk_val_sh, pf_risk)
             print(f"  Slide 4: portfolio risk (S+M={sm:.0f}%) -> '{pf_risk}'")
 
-    # SOA % and Demat % — these labels live in a smaller-font row at the
-    # bottom-left of the slide. The value shapes underneath them are also
-    # smaller font (≈101350 EMU) so _value_below() (which only looks at
-    # values >= 200000 EMU) won't find them. Search by exact label text +
-    # nearest "%" shape directly below in the same column.
+    # SOA % and Demat % — labels sit side-by-side at the bottom-left of the
+    # slide; their value shapes sit immediately below. The values can be
+    # WIDER than the labels and visually overlap into the neighbour's
+    # column, so a pure column-overlap test paired SOA and Demat to the
+    # SAME value shape and the second write wiped out the first. Pair by
+    # CENTER-X distance instead, and track which shapes have been claimed
+    # so each label gets a distinct value.
+    _soa_demat_claimed = set()
     def _pct_value_below(label_shape):
-        """Find any text shape containing '%' below `label_shape` in the
-        same column. Used for SOA / Demat values which are smaller-font
-        than the main metric values."""
         if label_shape is None:
             return None
-        lL, lT, lW = label_shape.left, label_shape.top, label_shape.width
-        best, best_dy = None, 1 << 30
+        lT = label_shape.top
+        l_center = label_shape.left + label_shape.width // 2
+        best, best_score = None, None
         for s in text_shapes:
-            if s is label_shape:
+            if s is label_shape or id(s) in _soa_demat_claimed:
                 continue
             if not s.text_frame.text.strip().endswith('%'):
                 continue
             if s.top <= lT:
                 continue
-            if s.left > lL + lW or s.left + s.width < lL:
-                continue
             dy = s.top - lT
-            if dy < best_dy and dy < 400000:
-                best_dy, best = dy, s
+            if dy >= 400000:
+                continue
+            s_center = s.left + s.width // 2
+            dx = abs(s_center - l_center)
+            # Lexicographic: smaller dy first, then smaller dx.
+            score = (dy, dx)
+            if best_score is None or score < best_score:
+                best_score, best = score, s
+        if best is not None:
+            _soa_demat_claimed.add(id(best))
         return best
 
     def _fmt_pct_for_slide(val):
