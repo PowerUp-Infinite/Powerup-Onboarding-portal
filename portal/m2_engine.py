@@ -3210,6 +3210,66 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
                 print(f"  Questionnaire: fuzzy match '{best_name}' "
                       f"({int(round(best_score * 100))}% similarity)")
 
+    # name_age token-overlap fallback — handles family portfolios where
+    # PF_level/customer_name didn't yield a name to match against. Iterate
+    # every individual listed in the uploaded name_age sheet and pick the
+    # closest questionnaire match by token overlap (>= 50%). This is what
+    # lets a family upload auto-resolve to whichever family member actually
+    # filled out the questionnaire.
+    #
+    # Side effect: if this fires we ALSO know which name_age individual
+    # was matched, so we can later back-fill slide-1/2/3 name+age from
+    # that entry — see the resolved_name/age block below.
+    questionnaire_matched_via_name_age_row = None
+    if q_row.empty:
+        na_df = data.get('name_age', pd.DataFrame())
+        if na_df is not None and not na_df.empty:
+            na_name_col = next(
+                (c for c in na_df.columns if c.upper() == 'NAME'), None,
+            )
+            q_name_col = next(
+                (c for c in qdf.columns if c.lower() == 'name'), None,
+            )
+            if na_name_col and q_name_col:
+                import re
+                def _tokens(s):
+                    return {t for t in re.split(r'\s+', s.lower().strip()) if t}
+                best_qrow = None
+                best_score = 0.0
+                best_match = ''
+                best_via = ''
+                best_via_row = None
+                for _, na_r in na_df.iterrows():
+                    individual = str(na_r.get(na_name_col) or '').strip()
+                    if not individual or individual.lower() == 'nan':
+                        continue
+                    ind_tokens = _tokens(individual)
+                    if not ind_tokens:
+                        continue
+                    for _, qr in qdf.iterrows():
+                        qn = str(qr.get(q_name_col) or '').strip()
+                        if not qn or qn.lower() == 'nan':
+                            continue
+                        qn_tokens = _tokens(qn)
+                        if not qn_tokens:
+                            continue
+                        # min() denominator so 'Niloufer' alone still matches
+                        # 'Niloufer Dundh' at 100%
+                        overlap = (len(ind_tokens & qn_tokens) /
+                                   min(len(ind_tokens), len(qn_tokens)))
+                        if overlap > best_score:
+                            best_score = overlap
+                            best_match = qn
+                            best_via   = individual
+                            best_via_row = na_r
+                            best_qrow  = qr
+                if best_qrow is not None and best_score >= 0.5:
+                    q_row = best_qrow
+                    questionnaire_matched_via_name_age_row = best_via_row
+                    print(f"  Questionnaire: name_age fuzzy match -> "
+                          f"'{best_match}' (via '{best_via}', "
+                          f"{int(round(best_score*100))}% token overlap)")
+
     if q_row.empty:
         print(f"  WARNING: no questionnaire row for '{customer_name}'")
 
@@ -3317,6 +3377,26 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
             _apply(na_df.iloc[0])
             if resolved_name and not name_source: name_source = 'name_age (single row)'
             if resolved_age  and not age_source:  age_source  = 'name_age (single row)'
+
+    # Step 5: if the questionnaire was auto-matched via a name_age entry,
+    # use THAT same entry's name + age for the slides. Handles family
+    # portfolios where PF_level/customer_name had no name to match against.
+    if (not resolved_name or not resolved_age) \
+            and questionnaire_matched_via_name_age_row is not None:
+        # Re-resolve column names against this row's index (defensive)
+        na_row = questionnaire_matched_via_name_age_row
+        n_col = next((c for c in na_row.index if str(c).upper() == 'NAME'), None)
+        a_col = next((c for c in na_row.index if str(c).upper() == 'AGE'),  None)
+        if not resolved_name and n_col is not None:
+            v = _val(na_row.get(n_col))
+            if v:
+                resolved_name = v
+                name_source   = 'name_age (questionnaire-matched entry)'
+        if not resolved_age and a_col is not None:
+            v = _val(na_row.get(a_col))
+            if v:
+                resolved_age = v
+                age_source   = 'name_age (questionnaire-matched entry)'
 
     if resolved_name:
         print(f"  Resolved name '{resolved_name}' from {name_source}")
