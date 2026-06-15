@@ -1302,6 +1302,32 @@ def _update_legend_groups(slide, parts, eq_total):
     eq_labels    = {'High Risk', 'Medium Risk', 'Low Risk',
                     'Aggressive', 'Balanced', 'Conservative'}
 
+    # Case + whitespace + decorator tolerance — manual template edits often
+    # leave trailing spaces or accidental newlines that break exact-match
+    # comparison. Map the normalised form back to the canonical label.
+    def _canonicalise_label(text):
+        s = (text or '').strip()
+        # Take first non-empty line (some manually-edited cells gain a
+        # secondary blank paragraph that text.strip() doesn't drop).
+        for line in s.splitlines():
+            line = line.strip()
+            if line:
+                s = line
+                break
+        # Normalise for matching: lowercase, remove leading 'N) ' decorators
+        norm = s.lower().lstrip()
+        if len(norm) > 3 and norm[0].isdigit() and norm[1] == ')':
+            norm = norm[2:].strip()
+        # Build a map from lowercased canonical labels to the canonical form
+        lc_map = {lb.lower(): lb for lb in KNOWN_LABELS}
+        if norm in lc_map:
+            return lc_map[norm]
+        # Sometimes the label has the % glued in ('High Risk 25%')
+        for lc, canon in lc_map.items():
+            if norm.startswith(lc + ' ') or norm.startswith(lc + '\xa0'):
+                return canon
+        return None
+
     def _set_pct(pct_sh, val):
         if val <= 0:
             new_text = ''
@@ -1330,15 +1356,16 @@ def _update_legend_groups(slide, parts, eq_total):
         except Exception:
             continue
 
-        # Identify label shapes by exact text match and % shapes by '%' presence
-        label_children = []   # list of (cat, shape)
+        # Identify label shapes (case+whitespace tolerant) and % shapes
+        label_children = []   # list of (canonical_cat, shape)
         pct_children   = []
         for ch in children:
             if not ch.has_text_frame:
                 continue
             t = ch.text_frame.text.strip()
-            if t in KNOWN_LABELS:
-                label_children.append((t, ch))
+            canon = _canonicalise_label(t)
+            if canon is not None:
+                label_children.append((canon, ch))
             elif '%' in t:
                 pct_children.append(ch)
         if not label_children:
@@ -3202,42 +3229,96 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
     print(f"  Opened base deck template (from Drive)")
 
     # ── Resolve client name + age ──────────────────────────────────────────
-    # Lookup order:
-    #   1. PF_level row (Name / Age columns) — authoritative when populated
-    #   2. name_age sheet matched by USER_ID == PF_ID (works for individual
-    #      portfolios where PF_ID is the MFU-style USER_ID; family-portfolio
-    #      PF_IDs like "PF000026" won't match here)
-    #   3. Otherwise: warn and leave the deck placeholders untouched so the
-    #      RM can fill them in manually.
+    # Lookup order (each step only runs if the previous didn't fill the value):
+    #   1. PF_level row (Name / Age columns)
+    #   2. name_age sheet WHERE USER_ID == PF_ID (exact match)
+    #   3. name_age sheet — fuzzy match against customer_name (SequenceMatcher
+    #      score >= 0.5). Picks the best matching individual; handles family
+    #      portfolios where Mathur Jaideep Rahul lives in name_age but the
+    #      PF_ID is the family-level INF_*** identifier.
+    #   4. name_age sheet — if it has exactly ONE row, use it
+    #   5. Warn and leave blank
+    def _val(v):
+        if v is None: return ''
+        if isinstance(v, float) and pd.isna(v): return ''
+        s = str(v).strip()
+        return '' if s.lower() == 'nan' else s
+
     resolved_name = ''
     resolved_age  = ''
+    name_source   = ''
+    age_source    = ''
+
+    # Step 1: PF_level
     if pf_row is not None and not pf_row.empty:
-        v = pf_row.get('Name')
-        if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip():
-            resolved_name = str(v).strip()
-        v = pf_row.get('Age')
-        if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip():
-            resolved_age = str(v).strip()
+        resolved_name = _val(pf_row.get('Name'))
+        if resolved_name: name_source = 'PF_level'
+        resolved_age  = _val(pf_row.get('Age'))
+        if resolved_age: age_source = 'PF_level'
 
-    if (not resolved_name) or (not resolved_age):
-        na_df = data.get('name_age', pd.DataFrame())
-        if na_df is not None and not na_df.empty and 'USER_ID' in na_df.columns:
-            hit = na_df[na_df['USER_ID'].astype(str).str.strip() == str(pf_id).strip()]
-            if not hit.empty:
-                row = hit.iloc[0]
-                if not resolved_name:
-                    n = row.get('NAME') or row.get('Name')
-                    if n is not None and not (isinstance(n, float) and pd.isna(n)) and str(n).strip():
-                        resolved_name = str(n).strip()
-                if not resolved_age:
-                    a = row.get('AGE') or row.get('Age')
-                    if a is not None and not (isinstance(a, float) and pd.isna(a)) and str(a).strip():
-                        resolved_age = str(a).strip()
+    na_df = data.get('name_age', pd.DataFrame())
+    if (not resolved_name or not resolved_age) and na_df is not None and not na_df.empty \
+            and 'USER_ID' in na_df.columns:
+        name_col = 'NAME' if 'NAME' in na_df.columns else ('Name' if 'Name' in na_df.columns else None)
+        age_col  = 'AGE'  if 'AGE'  in na_df.columns else ('Age'  if 'Age'  in na_df.columns else None)
 
-    if not resolved_name:
+        def _apply(row):
+            nonlocal resolved_name, resolved_age, name_source, age_source
+            n = _val(row.get(name_col)) if name_col else ''
+            a = _val(row.get(age_col))  if age_col  else ''
+            if not resolved_name and n:
+                resolved_name = n
+            if not resolved_age and a:
+                resolved_age = a
+            return n, a
+
+        # Step 2: exact USER_ID match
+        hit = na_df[na_df['USER_ID'].astype(str).str.strip() == str(pf_id).strip()]
+        if not hit.empty:
+            _apply(hit.iloc[0])
+            if resolved_name and not name_source: name_source = 'name_age (USER_ID match)'
+            if resolved_age  and not age_source:  age_source  = 'name_age (USER_ID match)'
+
+        # Step 3: fuzzy match against customer_name. Use a token-overlap
+        # score (fraction of customer_name words found in the candidate) so
+        # word-reordered names like 'Rahul Mathur' vs 'Mathur Jaideep Rahul'
+        # match cleanly — SequenceMatcher's char-level ratio penalises that
+        # too heavily (0.375 in that example, below any sensible threshold).
+        if (not resolved_name or not resolved_age) and name_col and customer_name:
+            import re
+            def _tokens(s):
+                return {t for t in re.split(r'\s+', s.lower().strip()) if t}
+            cn_tokens = _tokens(customer_name)
+            best, best_score = None, 0.0
+            if cn_tokens:
+                for _, r in na_df.iterrows():
+                    cand = _val(r.get(name_col))
+                    if not cand: continue
+                    cand_tokens = _tokens(cand)
+                    if not cand_tokens: continue
+                    overlap = len(cn_tokens & cand_tokens) / len(cn_tokens)
+                    if overlap > best_score:
+                        best_score, best = overlap, r
+            if best is not None and best_score >= 0.5:
+                _apply(best)
+                tag = f'name_age (fuzzy {int(round(best_score*100))}% token overlap)'
+                if resolved_name and not name_source: name_source = tag
+                if resolved_age  and not age_source:  age_source  = tag
+
+        # Step 4: single-row Name_age sheet — unambiguous
+        if (not resolved_name or not resolved_age) and len(na_df) == 1:
+            _apply(na_df.iloc[0])
+            if resolved_name and not name_source: name_source = 'name_age (single row)'
+            if resolved_age  and not age_source:  age_source  = 'name_age (single row)'
+
+    if resolved_name:
+        print(f"  Resolved name '{resolved_name}' from {name_source}")
+    else:
         print(f"  WARNING: no name found for PF_ID '{pf_id}' "
               f"(checked PF_level + name_age) — slide 1/2 left blank")
-    if not resolved_age:
+    if resolved_age:
+        print(f"  Resolved age '{resolved_age}' from {age_source}")
+    else:
         print(f"  WARNING: no age found for PF_ID '{pf_id}' "
               f"(checked PF_level + name_age) — slide 3 age left blank")
 
