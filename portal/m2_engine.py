@@ -148,15 +148,15 @@ CHART_COLORS = {
     'Solution':         '#CABAF3',  # lavender           — from PowerUp_Base_Deck legend
 }
 CHART_LABELS = {
-    # Equity sub-categories — old names
-    '1) Aggressive':    'Aggressive',
-    '2) Balanced':      'Balanced',
-    '3) Conservative':  'Conservative',
-    # Equity sub-categories — new names (collapsed to the same display label
-    # so the existing slide-4 legend template still matches)
-    '1) High Risk':     'Aggressive',
-    '2) Medium Risk':   'Balanced',
-    '3) Low Risk':      'Conservative',
+    # Equity sub-categories — old & new data names both render with the new
+    # 'High / Medium / Low Risk' display labels. The slide-4 base-deck template
+    # legend MUST use the same labels for _update_legend_groups to match rows.
+    '1) Aggressive':    'High Risk',
+    '2) Balanced':      'Medium Risk',
+    '3) Conservative':  'Low Risk',
+    '1) High Risk':     'High Risk',
+    '2) Medium Risk':   'Medium Risk',
+    '3) Low Risk':      'Low Risk',
     # Other categories
     'Hybrid':           'Hybrid',
     'Gold & Silver':    'Gold & Silver',
@@ -1185,7 +1185,7 @@ def _make_pie(slide, rg):
     if not parts:
         print("  Slide 4: empty riskgroup — skipping chart"); return
 
-    eq_order    = ['Aggressive', 'Balanced', 'Conservative']
+    eq_order    = ['High Risk', 'Medium Risk', 'Low Risk']
     # Legend order from reference deck: Equity → Hybrid → Debt Like → Gold & Silver → Global → Solution
     other_order = ['Hybrid', 'Debt', 'Gold & Silver', 'Global', 'Solution']
 
@@ -1292,8 +1292,15 @@ def _update_legend_groups(slide, parts, eq_total):
     pct_map = {lb: pc for lb, pc, _ in parts}
     col_map = {lb: col for lb, _, col in parts}
 
-    KNOWN_LABELS = {'Conservative', 'Balanced', 'Aggressive', 'Equity', 'Hybrid'}
-    eq_labels    = {'Aggressive', 'Balanced', 'Conservative'}
+    # Recognise BOTH the new template labels ('High Risk' / 'Medium Risk' /
+    # 'Low Risk') and the legacy ones ('Aggressive' / 'Balanced' /
+    # 'Conservative'), so the engine works against either template version
+    # while the manual Drive-template edit is being rolled out.
+    KNOWN_LABELS = {'High Risk', 'Medium Risk', 'Low Risk',
+                    'Aggressive', 'Balanced', 'Conservative',
+                    'Equity', 'Hybrid'}
+    eq_labels    = {'High Risk', 'Medium Risk', 'Low Risk',
+                    'Aggressive', 'Balanced', 'Conservative'}
 
     def _set_pct(pct_sh, val):
         if val <= 0:
@@ -2670,13 +2677,27 @@ def populate_questionnaire_slide(slide, q_row):
 
 # Risk Reward deck is fetched from Drive lazily via _get_rr_deck_path()
 
-# Risk profile → 0-based start index in the risk-reward deck (groups of 4)
+# Risk profile → 0-based start index in the risk-reward deck.
+# The new 36-slide deck (file ID 1I-2BXzKpXQC3LG-xo4uZuOLMjpaj7tLCNjqIRcXgZE8)
+# packs TWO variants per profile (with-Global + without-Global), 4 slides each.
+# We always use the WITH-GLOBAL variant — verified by inspection that the
+# first 4 slides of every 8-slide block carry 'Global' in their portfolio
+# legend. Very Conservative has a single 4-slide block (no separate variants).
+#   1-4   = Very Aggressive (Global variant)  -> idx 0
+#   5-8   = Very Aggressive (no-Global)       -> skipped
+#   9-12  = Aggressive (Global)               -> idx 8
+#   13-16 = Aggressive (no-Global)            -> skipped
+#   17-20 = Balanced (Global)                 -> idx 16
+#   21-24 = Balanced (no-Global)              -> skipped
+#   25-28 = Conservative (Global)             -> idx 24
+#   29-32 = Conservative (no-Global)          -> skipped
+#   33-36 = Very Conservative (only variant)  -> idx 32
 RISK_REWARD_IDX = {
-    'Very Aggressive':  0,
-    'Aggressive':       4,
-    'Balanced':         8,
-    'Conservative':     12,
-    'Very Conservative': 12,   # same as Conservative
+    'Very Aggressive':   0,
+    'Aggressive':        8,
+    'Balanced':         16,
+    'Conservative':     24,
+    'Very Conservative': 32,
 }
 
 
@@ -2867,7 +2888,7 @@ def do_risk_reward_slides(prs, risk_profile, goals=None):
     except Exception as e:
         print(f"  Risk Reward: Drive fetch failed - skipping ({e})"); return
     rr_prs = Presentation(_rr_path)
-    start  = RISK_REWARD_IDX.get(risk_profile, 8)
+    start  = RISK_REWARD_IDX.get(risk_profile, 16)   # default = Balanced (new 36-slide layout)
 
     count = 0
     for offset in range(4):
