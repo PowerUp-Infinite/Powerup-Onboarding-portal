@@ -3569,7 +3569,6 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
                 (c for c in qdf.columns if c.lower() == 'name'), None,
             )
             if na_name_col and q_name_col:
-                import re
                 def _tokens(s):
                     return {t for t in re.split(r'\s+', s.lower().strip()) if t}
                 best_qrow = None
@@ -3690,7 +3689,6 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
         # match cleanly — SequenceMatcher's char-level ratio penalises that
         # too heavily (0.375 in that example, below any sensible threshold).
         if (not resolved_name or not resolved_age) and name_col and customer_name:
-            import re
             def _tokens(s):
                 return {t for t in re.split(r'\s+', s.lower().strip()) if t}
             cn_tokens = _tokens(customer_name)
