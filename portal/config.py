@@ -18,6 +18,7 @@ _ENV_KEYS: dict[str, tuple[str, str | None]] = {
     "M1_APPS_SCRIPT_URL":         ("M1_APPS_SCRIPT_URL", None),
     "M2_TEMPLATE_ID":             ("M2_TEMPLATE_ID", None),
     "M2_RISK_REWARD_TEMPLATE_ID": ("M2_RISK_REWARD_TEMPLATE_ID", None),
+    "M2_GOAL_PORTFOLIO_TEMPLATE_ID": ("M2_GOAL_PORTFOLIO_TEMPLATE_ID", None),
     "M3_TEMPLATE_ID":             ("M3_TEMPLATE_ID", None),
     "MAIN_SPREADSHEET_ID":        ("MAIN_SPREADSHEET_ID", None),
     "M3_SPREADSHEET_ID":          ("M3_SPREADSHEET_ID", None),

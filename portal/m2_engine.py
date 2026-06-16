@@ -45,6 +45,7 @@ import sheets
 import tempfile
 from config import (
     M2_TEMPLATE_ID, M2_RISK_REWARD_TEMPLATE_ID,
+    M2_GOAL_PORTFOLIO_TEMPLATE_ID,
     M2_CATEGORIZATION_FILE_ID,
     M2_IMG_INFORM_ID, M2_IMG_ONTRACK_ID,
     M2_IMG_OFFTRACK_ID, M2_IMG_OUTOFFORM_ID,
@@ -106,6 +107,13 @@ def _get_categorization_path():
     """Download Scheme Categorization Excel from Drive."""
     return _download_drive_file(
         M2_CATEGORIZATION_FILE_ID, 'Scheme_Category_Catgorization.xlsx',
+    )
+
+def _get_goal_deck_path():
+    """Download Core Goals template from Drive (Google Slides -> PPTX)."""
+    return _download_drive_file(
+        M2_GOAL_PORTFOLIO_TEMPLATE_ID, 'Goal_Portfolio.pptx',
+        export_mime='application/vnd.openxmlformats-officedocument.presentationml.presentation',
     )
 
 def _get_rating_image(key):
@@ -1586,26 +1594,45 @@ def do_appendix(prs, pf_id, data):
     sch['_disp'] = sch['UPDATED_SUBCATEGORY'].map(n_map).fillna(
                        sch['UPDATED_SUBCATEGORY'].str.replace('_', ' ').str.title())
 
+    # Collapse Global* and FUND_OF_FUNDS_* subcategories into single buckets so
+    # the appendix shows ONE 'Global' slide (not 'Global Us Nasdaq 100' +
+    # 'Global Us Others Passive' + ...) and ONE 'FoF' slide. FoF takes
+    # precedence over Global for hybrid names like FUND_OF_FUNDS_GLOBAL_*.
+    def _bucket(sc):
+        s = str(sc or '')
+        if s.startswith('FUND_OF_FUNDS'): return 'FUND_OF_FUNDS'
+        if s.startswith('GLOBAL'):        return 'GLOBAL'
+        return s
+    sch['_group'] = sch['UPDATED_SUBCATEGORY'].apply(_bucket)
+    _bucket_overrides = {
+        'GLOBAL':        dict(disp='Global', cat='Global'),
+        'FUND_OF_FUNDS': dict(disp='FoF',    cat='Fund of Funds'),
+    }
+    for key, ov in _bucket_overrides.items():
+        mask = sch['_group'] == key
+        sch.loc[mask, '_disp'] = ov['disp']
+        sch.loc[mask, '_cat']  = ov['cat']
+
     # Drop rows with no subcategory (can't be grouped or displayed)
     sch = sch.dropna(subset=['UPDATED_SUBCATEGORY'])
 
-    # Ordered unique subcategories by sort number
+    # Ordered unique groups by sort number (use MIN sort across all members)
     seen = {}
     for _, r in sch.sort_values('_sort').iterrows():
-        sc = r['UPDATED_SUBCATEGORY']
-        if sc not in seen:
-            seen[sc] = r['_sort']
+        gk = r['_group']
+        if gk not in seen:
+            seen[gk] = r['_sort']
 
     groups = []
-    for subcat in seen:
-        grp = sch[sch['UPDATED_SUBCATEGORY'] == subcat].sort_values(
+    for group_key in seen:
+        grp = sch[sch['_group'] == group_key].sort_values(
             'CURRENT_VALUE', ascending=False)
         if grp.empty:
             continue
         groups.append(dict(
             cat  = grp['_cat'].iloc[0],
             disp = grp['_disp'].iloc[0],
-            sort = grp['_sort'].iloc[0],
+            sort = grp['_sort'].min(),
             rows = list(grp.iterrows()),
         ))
 
@@ -1650,7 +1677,10 @@ def do_appendix(prs, pf_id, data):
 
     print(f"  Appendix: {len(sch)} schemes -> {len(specs)} slides")
 
-    tpl_idx = {4: 22, 3: 23, 2: 24, 1: 25}
+    # Appendix templates (Equity 4-row / 3-row / 2-row / 1-row) sit at
+    # 0-idx 24-27 (1-idx 25-28). Preserved static slides before them:
+    # 'Appendix' divider (0-idx 22) and 'Example Fee Calculation' (0-idx 23).
+    tpl_idx = {4: 24, 3: 25, 2: 26, 1: 27}
 
     # Keep references to the template slides BEFORE any cloning shifts their indices.
     tpl_slides_ref = {n: prs.slides[tpl_idx[n]] for n in [1, 2, 3, 4]}
@@ -1667,13 +1697,13 @@ def do_appendix(prs, pf_id, data):
             ns = clone_slide(prs, tpl_idx[sp['tpl']])
         new_slides.append((ns, sp))
 
-    for i in [25, 24, 23, 22]:
+    for i in [27, 26, 25, 24]:
         delete_slide(prs, i)
 
     n = len(specs)
     first_new = len(prs.slides) - n
     for i in range(n):
-        move_slide(prs, first_new + i, 22 + i)
+        move_slide(prs, first_new + i, 24 + i)
 
     for ns, sp in new_slides:
         if sp['tpl'] == 'packed':
@@ -1696,7 +1726,7 @@ def do_hyperlinks(prs, n_appendix):
     NS_R_ID   = f'{{{NS_R}}}id'
 
     slide4     = prs.slides[3]
-    first_app  = prs.slides[22]   # first appendix slide is always at index 22
+    first_app  = prs.slides[24]   # first appendix slide sits at 0-idx 24 (after Appendix divider + Fee Calculation)
 
     # ── Slide 4 "see here" → first appendix slide ──────────────────
     for shape in slide4.shapes:
@@ -1710,7 +1740,7 @@ def do_hyperlinks(prs, n_appendix):
 
     # ── Each appendix slide "Go back" → slide 4 ─────────────────────
     for i in range(n_appendix):
-        app_slide = prs.slides[22 + i]
+        app_slide = prs.slides[24 + i]
         rId = app_slide.part.relate_to(slide4.part, REL_SLIDE)
         for shape in app_slide.shapes:
             for hlink in shape._element.iter(f'{{{NS_A}}}hlinkClick'):
@@ -2735,11 +2765,35 @@ RISK_REWARD_IDX = {
 }
 
 
+def _add_slide_unique_partname(dst_prs, layout):
+    """python-pptx's Slides.add_slide picks partname /ppt/slides/slideN.xml
+    using N = len(sldIdLst)+1, which collides when the deck has sparse slide
+    parts (e.g. from prior add+remove cycles). That produces a duplicate-name
+    zip entry, which Drive refuses to convert to Google Slides.
+
+    Work around by temporarily monkey-patching the _next_slide_partname
+    property to scan existing package parts and return the first free index."""
+    from pptx.opc.packuri import PackURI
+    pres_part_cls = type(dst_prs.part)
+    original = pres_part_cls._next_slide_partname
+    def _free_partname(self):
+        used = {p.partname for p in self.package.iter_parts()}
+        n = 1
+        while PackURI('/ppt/slides/slide%d.xml' % n) in used:
+            n += 1
+        return PackURI('/ppt/slides/slide%d.xml' % n)
+    pres_part_cls._next_slide_partname = property(_free_partname)
+    try:
+        return dst_prs.slides.add_slide(layout)
+    finally:
+        pres_part_cls._next_slide_partname = original
+
+
 def _cross_deck_clone(src_slide, dst_prs):
     """Clone a slide from src_slide (another Presentation) into dst_prs.
     Images are copied as raw bytes so there are no part-name collisions."""
     layout = dst_prs.slide_layouts[0]
-    ns = dst_prs.slides.add_slide(layout)
+    ns = _add_slide_unique_partname(dst_prs, layout)
 
     # Copy each image from source to destination package and remap rIds
     img_map = {}
@@ -2916,11 +2970,15 @@ def do_risk_reward_slides(prs, risk_profile, goals=None):
     Replace slides 15-18 (indices 14-17) in prs in-place with the 4 slides
     from the risk-reward deck that correspond to risk_profile.
     Uses in-place content replacement to avoid XML part-name collisions.
+    Returns the allocation dict extracted from the FIRST overview slide
+    (e.g. {'High Risk':50,'Medium Risk':20,'Low Risk':10,'Hybrid':10,'Global':10})
+    so the caller can drive the Core Goals slide off the same numbers.
     """
+    rr_alloc = {}
     try:
         _rr_path = _get_rr_deck_path()
     except Exception as e:
-        print(f"  Risk Reward: Drive fetch failed - skipping ({e})"); return
+        print(f"  Risk Reward: Drive fetch failed - skipping ({e})"); return rr_alloc
     rr_prs = Presentation(_rr_path)
     start  = RISK_REWARD_IDX.get(risk_profile, 16)   # default = Balanced (new 36-slide layout)
 
@@ -2940,8 +2998,288 @@ def do_risk_reward_slides(prs, risk_profile, goals=None):
         except Exception as e:
             print(f"  Risk Reward: WARNING slide {src_idx+1}: {e}")
 
+    # Extract allocation from the first overview slide (offset 0 — the
+    # 'L' variant). Used by do_goal_portfolio_slide to size its bar.
+    if count >= 1:
+        try:
+            rr_alloc = _extract_rr_allocation(rr_prs.slides[start])
+            if rr_alloc:
+                print(f"  Risk Reward: extracted allocation -> {rr_alloc}")
+        except Exception as e:
+            print(f"  Risk Reward: WARNING couldn't extract allocation ({e})")
+
     print(f"  Risk Reward: replaced {count} slides for '{risk_profile}' "
           f"(source idx {start}-{start+count-1})")
+    return rr_alloc
+
+
+# ──────────────────────────────────────────────────────────────
+# CORE GOALS / Goal Portfolio slide — inserted after slide 13
+# ──────────────────────────────────────────────────────────────
+
+_GOAL_CATEGORIES = ['High Risk', 'Medium Risk', 'Low Risk', 'Hybrid', 'Global']
+
+def _extract_rr_allocation(rr_slide):
+    """Walk a Risk Reward overview slide and return its legend %s as a dict
+    keyed by category name ('High Risk', 'Medium Risk', 'Low Risk', 'Hybrid',
+    'Global'). Pairs each label with its closest '%' shape on the same row.
+    """
+    shapes = []
+    def walk(group_shapes):
+        for s in group_shapes:
+            try:
+                if s.shape_type == 6:
+                    walk(s.shapes); continue
+            except Exception:
+                pass
+            if s.has_text_frame and s.text_frame.text.strip():
+                shapes.append(s)
+    walk(rr_slide.shapes)
+
+    alloc = {}
+    for cat in _GOAL_CATEGORIES:
+        lbl = next((s for s in shapes
+                    if s.text_frame.text.strip() == cat), None)
+        if lbl is None:
+            continue
+        lT, lL = lbl.top, lbl.left
+        best, best_dx = None, 1 << 30
+        for s in shapes:
+            if s is lbl:
+                continue
+            t = s.text_frame.text.strip()
+            if not t.endswith('%'):
+                continue
+            if abs(s.top - lT) > 80000:
+                continue
+            if s.left <= lL:
+                continue
+            dx = s.left - lL
+            if dx < best_dx:
+                best_dx, best = dx, s
+        if best is not None:
+            try:
+                alloc[cat] = int(round(float(best.text_frame.text.strip().rstrip('%'))))
+            except (TypeError, ValueError):
+                pass
+    return alloc
+
+
+def _set_first_run_text(shape, text):
+    """Overwrite the first run's text and blank any subsequent runs in the
+    first paragraph. Preserves run formatting."""
+    if not shape.has_text_frame:
+        return
+    paras = shape.text_frame.paragraphs
+    if not paras:
+        return
+    p0 = paras[0]
+    runs = p0.runs
+    if runs:
+        runs[0].text = text
+        for r in runs[1:]:
+            r.text = ''
+    else:
+        p0.text = text
+
+
+def _populate_goal_slide(slide, rr_alloc):
+    """
+    Mutate the left-panel of the Core Goals slide so the bar segments + legend
+    rows reflect `rr_alloc` (dict of category -> integer percent).
+
+    Template has 5 bar segments at top=4.85in (one per category in order
+    High/Med/Low/Hybrid/Global), each with a paired pct label sharing the
+    same top+left. Legend rows sit at top ~6.00..6.88 with pct cells at
+    left ~4.80in.
+
+    Identifies shapes by ROW (top coordinate) + role (text vs blank,
+    contains '%' vs label) rather than by shape name, because the template
+    has duplicate shape names (Google Shape;31 / Google Shape;32 / etc.)
+    where the user duplicated rows to add Global.
+    """
+    EMU = 914400
+    # Positions match the "Core vs Growth Portfolio Template" Google Slide
+    # (file id 1uKFXYspoTHyXRsgvsnfNjShwSYUQ68BmYB_yaM6Y4TM). Earlier PPTX
+    # template had bars at top=4.85 / BAR_LEFT=1.0; this one uses a smaller
+    # half-card layout so the constants shift.
+    BAR_LEFT  = 0.75 * EMU
+    BAR_TOP   = 3.64 * EMU
+    BAR_H     = 0.41 * EMU
+    BAR_TOTAL = 3.84 * EMU
+    ROW_TOL   = 60000   # ~0.07in — generous tolerance for sibling-row picking
+
+    cats = _GOAL_CATEGORIES
+    pcts = [int(rr_alloc.get(c, 0)) for c in cats]
+    total = sum(pcts) or 100   # avoid div-zero; bar is scaled to actual total
+    widths = [int(BAR_TOTAL * p / total) for p in pcts]
+
+    # ── Bar segments + pct labels (both rows share top=3.64) ──────────────
+    # Cap left at 4.7in so we don't sweep right-panel shapes (which start at
+    # left=5.39in) into the left-panel resize logic.
+    LEFT_PANEL_RIGHT = int(4.7 * EMU)
+    bar_blank = []   # solid rectangles, no text
+    bar_pcts  = []   # text shapes ending with '%'
+    for s in slide.shapes:
+        if abs(s.top - BAR_TOP) > ROW_TOL:
+            continue
+        if s.left is not None and s.left >= LEFT_PANEL_RIGHT:
+            continue
+        if not s.has_text_frame:
+            # No text frame at all — colour-fill rect
+            bar_blank.append(s); continue
+        t = s.text_frame.text.strip()
+        if t == '':
+            bar_blank.append(s)
+        elif t.endswith('%'):
+            bar_pcts.append(s)
+    bar_blank.sort(key=lambda s: s.left)
+    bar_pcts.sort(key=lambda s: s.left)
+
+    # Resize and reflow the 5 bar segments
+    x = int(BAR_LEFT)
+    for i in range(min(5, len(bar_blank))):
+        bar = bar_blank[i]
+        bar.left = x
+        bar.width = widths[i] if i < len(widths) else 0
+        bar.top = int(BAR_TOP)
+        bar.height = int(BAR_H)
+        x += widths[i] if i < len(widths) else 0
+    # Reflow + relabel pct overlays
+    x = int(BAR_LEFT)
+    for i in range(min(5, len(bar_pcts))):
+        lbl = bar_pcts[i]
+        lbl.left = x
+        lbl.width = widths[i] if i < len(widths) else 0
+        lbl.top = int(BAR_TOP)
+        lbl.height = int(BAR_H)
+        _set_first_run_text(lbl, f'{pcts[i]}%')
+        x += widths[i] if i < len(widths) else 0
+
+    # ── Top labels (row at top=4.09in) — 'Equity X%' / 'Hybrid Y%' / 'Global Z%' ──
+    eq_pct = pcts[0] + pcts[1] + pcts[2]
+    top_label_y = 4.09 * EMU
+    top_labels = [s for s in slide.shapes
+                  if s.has_text_frame and abs(s.top - top_label_y) < ROW_TOL
+                  and s.text_frame.text.strip()]
+    top_labels.sort(key=lambda s: s.left)
+    # First top-label is Equity (spans the equity sub-bars), second is Hybrid,
+    # third (if present) is Global
+    if len(top_labels) >= 1:
+        l = top_labels[0]
+        l.left = int(BAR_LEFT)
+        l.width = sum(widths[:3])
+        _set_first_run_text(l, f'Equity {eq_pct}%')
+    if len(top_labels) >= 2:
+        l = top_labels[1]
+        l.left = int(BAR_LEFT) + sum(widths[:3])
+        l.width = widths[3]
+        _set_first_run_text(l, f'Hybrid {pcts[3]}%')
+    if len(top_labels) >= 3:
+        l = top_labels[2]
+        l.left = int(BAR_LEFT) + sum(widths[:4])
+        l.width = widths[4]
+        _set_first_run_text(l, f'Global {pcts[4]}%')
+
+    # ── Legend pct cells (top ~4.33/4.50/4.66/4.83/4.99, all at left ~3.60) ──
+    legend_y_per_cat = {
+        'High Risk':   4.33 * EMU,
+        'Medium Risk': 4.50 * EMU,
+        'Low Risk':    4.66 * EMU,
+        'Hybrid':      4.83 * EMU,
+        'Global':      4.99 * EMU,
+    }
+    for cat in cats:
+        y = legend_y_per_cat[cat]
+        for s in slide.shapes:
+            if not s.has_text_frame: continue
+            if abs(s.top - y) > ROW_TOL: continue
+            t = s.text_frame.text.strip()
+            if not t.endswith('%'): continue
+            _set_first_run_text(s, f'{int(rr_alloc.get(cat, 0))}%')
+            break
+
+    # Recolor every right-panel shape currently filled with the template's
+    # Debt cream (#E8E0CE) to the canonical 'Debt Like' mint used elsewhere
+    # in the deck (#EBF2F2). Done in code because the template still ships
+    # the cream tone and the design system asks for the mint.
+    _recolor_fill(slide, src_hex='E8E0CE', dst_hex='EBF2F2')
+
+    # Goal template inherits Calibri (Google Slides default). M2 base deck
+    # uses IBM Plex Sans. Override so this slide blends with the rest.
+    _set_font(slide, font_name='IBM Plex Sans')
+
+
+def _set_font(slide, font_name):
+    """Set the typeface on every text run in every shape (including grouped
+    shapes) to `font_name`. Used to align cloned-from-Slides slides with the
+    M2 deck's IBM Plex Sans."""
+    def _walk(shapes):
+        for shp in shapes:
+            if shp.shape_type == 6:  # GROUP
+                _walk(shp.shapes); continue
+            if not shp.has_text_frame: continue
+            for para in shp.text_frame.paragraphs:
+                for run in para.runs:
+                    run.font.name = font_name
+    _walk(slide.shapes)
+
+
+def _recolor_fill(slide, src_hex, dst_hex):
+    """Re-fill every shape (including children of groups) whose current
+    solid fill matches `src_hex` to `dst_hex`. Hex values are 6-char RGB
+    without the leading '#'."""
+    from pptx.dml.color import RGBColor
+    target = RGBColor.from_string(dst_hex)
+    def _walk(shapes):
+        for shp in shapes:
+            if shp.shape_type == 6:  # GROUP
+                _walk(shp.shapes); continue
+            try:
+                if shp.fill.type == 1 and str(shp.fill.fore_color.rgb) == src_hex:
+                    shp.fill.solid()
+                    shp.fill.fore_color.rgb = target
+            except Exception:
+                pass
+    _walk(slide.shapes)
+
+
+def do_goal_portfolio_slide(prs, rr_alloc, risk_profile, insert_after_idx=12):
+    """Clone the Core Goals template slide into `prs`, populate its left
+    panel from `rr_alloc`, then move it to land at index
+    (insert_after_idx + 1). Default insert position is right after slide 13
+    ('Your portfolio with Infinite’s approach...').
+
+    Right panel ('Goals Portfolio' glide path) stays untouched — it's a
+    static reference per product team.
+    """
+    if not rr_alloc:
+        print("  Goal Portfolio: no allocation data — skipping")
+        return
+    try:
+        tpl_path = _get_goal_deck_path()
+    except Exception as e:
+        print(f"  Goal Portfolio: Drive fetch failed — skipping ({e})")
+        return
+
+    tpl_prs = Presentation(tpl_path)
+    src_slide = tpl_prs.slides[0]
+
+    # Clone (appends at end of prs)
+    new_slide = _cross_deck_clone(src_slide, prs)
+
+    # Populate left panel
+    _populate_goal_slide(new_slide, rr_alloc)
+
+    # Move from end to (insert_after_idx + 1)
+    sldIdLst = prs.slides._sldIdLst
+    children = list(sldIdLst)
+    # The slide we just added is the last child of sldIdLst
+    new_el = children[-1]
+    sldIdLst.remove(new_el)
+    sldIdLst.insert(insert_after_idx + 1, new_el)
+    print(f"  Goal Portfolio: inserted after slide {insert_after_idx + 1} "
+          f"with allocation {rr_alloc}")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -3453,7 +3791,13 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
 
     print("[9/9] Risk Reward Slides (15-18)")
     rr_goals = parse_goals(q_row.get("Goals", "")) if not q_row.empty else []
-    do_risk_reward_slides(prs, risk_profile, goals=rr_goals)
+    rr_alloc = do_risk_reward_slides(prs, risk_profile, goals=rr_goals)
+
+    print("[9b/9] Goal Portfolio Slide (inserted after RR slides, position 19)")
+    # RR slides sit at 0-indexed positions 14-17 (= 1-indexed 15-18).
+    # Place the goal slide right after the last RR slide so the flow reads
+    # divider -> 4 RR slides -> goal portfolio.
+    do_goal_portfolio_slide(prs, rr_alloc, risk_profile, insert_after_idx=17)
 
     print("[10/9] Questionnaire Slides")
     goals = parse_goals(q_row.get("Goals", "")) if not q_row.empty else []
