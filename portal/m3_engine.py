@@ -390,13 +390,60 @@ def _read_masterplan(ws):
     }
 
 
+def _read_pf_selection(wb):
+    """Read PF_Selection_* sheet and return rows with Action == 'Keep with customer'.
+
+    Sheet layout:
+      Row 1-2 — blank / title
+      Row 3   — headers (Row Labels | Current Value | ... | Action | Reason)
+      Row 4+  — data rows (scheme names mixed with risk-group/subcategory groupings)
+    """
+    ws = None
+    for name in wb.sheetnames:
+        if name.startswith('PF_Selection'):
+            ws = wb[name]; break
+    if ws is None:
+        return []
+    rows = list(ws.iter_rows(values_only=True))
+    if len(rows) < 4:
+        return []
+    header = rows[2]
+    name_idx = action_idx = reason_idx = value_idx = None
+    for i, h in enumerate(header):
+        hs = str(h).strip().lower() if h else ''
+        if hs == 'row labels':        name_idx = i
+        elif hs == 'action':          action_idx = i
+        elif hs == 'reason':          reason_idx = i
+        elif hs == 'current value':   value_idx = i
+    if action_idx is None or name_idx is None:
+        return []
+    out = []
+    for r in rows[3:]:
+        action = r[action_idx] if action_idx < len(r) else None
+        if not action:
+            continue
+        if 'keep with customer' not in str(action).strip().lower():
+            continue
+        val = r[value_idx] if value_idx is not None and value_idx < len(r) else None
+        out.append({
+            'scheme': str(r[name_idx]).strip() if name_idx < len(r) and r[name_idx] is not None else '',
+            'reason': str(r[reason_idx]).strip() if reason_idx is not None and reason_idx < len(r) and r[reason_idx] is not None else '',
+            'value':  float(val) if isinstance(val, (int, float)) else 0.0,
+        })
+    return out
+
+
 def read_excel(excel_path):
     wb = openpyxl.load_workbook(excel_path, data_only=True)
+
+    pf_selection = _read_pf_selection(wb)
 
     # New format: PF_MasterPlan_* sheet takes priority
     mp_ws = _get_masterplan_sheet(wb)
     if mp_ws is not None:
-        return _read_masterplan(mp_ws)
+        out = _read_masterplan(mp_ws)
+        out['pf_selection'] = pf_selection
+        return out
 
     # Old format: PF_Curation_* sheet
     ws = get_curation_sheet(wb)
@@ -611,9 +658,9 @@ SUBCAT_SHORT = {
 }
 
 RG_DISPLAY = {
-    '1) Aggressive':   'Aggressive',
-    '2) Balanced':     'Balanced',
-    '3) Conservative': 'Conservative',
+    '1) Aggressive':   'High Risk',
+    '2) Balanced':     'Medium Risk',
+    '3) Conservative': 'Low Risk',
     'Hybrid':          'Hybrid',
     'Debt Like':       'Debt-Like',
     'Global':          'Global',
@@ -645,11 +692,27 @@ CORPUS_TEMPLATE = {
     'Solution':        21,
 }
 
-# Label line 1 per risk group
+# Label line 1 per risk group — value is what the TEMPLATE slide carries
+# (used to locate the scheme slide). The DISPLAY label written back to the
+# slide goes through RG_LABEL1_DISPLAY below.
 RG_LABEL1 = {
     '1) Aggressive':   'Equity - Aggressive',
     '2) Balanced':     'Equity - Balanced',
     '3) Conservative': 'Equity - Conservative',
+    'Hybrid':          'Hybrid',
+    'Gold & Silver':   'Gold',
+    'Global':          'Global',
+    'Debt Like':       'Debt Like',
+    'Solution':        'Solution',
+}
+
+# What the per-scheme slide should DISPLAY as line 1 after population.
+# Diverges from RG_LABEL1 so we keep the legacy template strings searchable
+# while still showing the new High/Medium/Low Risk terminology to users.
+RG_LABEL1_DISPLAY = {
+    '1) Aggressive':   'Equity - High Risk',
+    '2) Balanced':     'Equity - Medium Risk',
+    '3) Conservative': 'Equity - Low Risk',
     'Hybrid':          'Hybrid',
     'Gold & Silver':   'Gold',
     'Global':          'Global',
@@ -1023,47 +1086,64 @@ def build_sip_rows(section4):
     def sip_amt(r):
         return _get_val(r, sip_amt_key, 'SIP Amount', 'SIP Allocation Amount') or 0
 
+    # Normalise: compute pct from amount/total_combined_amount instead of
+    # summing the per-row 'SIP Allocation %' column. With multiple SIPing
+    # users the per-row %s each sum to 100% INDIVIDUALLY, so a naive sum
+    # gives 200%+. Deriving pct from amount keeps the displayed share
+    # consistent with the actual money split — totals always sum to 100%.
+    # NOTE: callers (populate_slide4) expect pct as a FRACTION (0.0..1.0)
+    # and multiply by 100 themselves when rendering.
+    total_amount = sum(sip_amt(r)
+                       for subs in groups.values() for s in subs.values() for r in s) or 1.0
+    def pct_of(amount):
+        return amount / total_amount
+
+    def uniq_count(schemes):
+        """Count distinct funds (deduped by ISIN if present, else FUND_NAME).
+        Otherwise multi-user portfolios double-count the same scheme."""
+        keys = set()
+        for r in schemes:
+            k = r.get('ISIN') or r.get('FUND_NAME') or id(r)
+            keys.add(k)
+        return len(keys)
+
+    # `bold` is explicit (not derived from level) because the same `level: 1`
+    # is used for both equity sub-buckets (High/Med/Low Risk — should be bold)
+    # AND non-equity subcategories (Gold subcat, Global Us — should NOT be bold).
     equity_present = [rg for rg in EQUITY_RGS if rg in groups]
     if equity_present:
         eq_amount = sum(sip_amt(r) for rg in equity_present
                         for subs in groups[rg].values() for r in subs)
-        eq_pct = sum(r.get('SIP Allocation %', 0) or 0
-                     for rg in equity_present
-                     for subs in groups[rg].values() for r in subs)
-        eq_count = sum(len(subs) for rg in equity_present for subs in groups[rg].values())
-        rows.append({'name': 'Equity', 'amount': eq_amount, 'pct': eq_pct,
-                     'count': eq_count, 'level': 0})
+        eq_count = uniq_count([r for rg in equity_present
+                               for subs in groups[rg].values() for r in subs])
+        rows.append({'name': 'Equity', 'amount': eq_amount, 'pct': pct_of(eq_amount),
+                     'count': eq_count, 'level': 0, 'bold': True})
 
         for rg in equity_present:
             rg_amount = sum(sip_amt(r) for subs in groups[rg].values() for r in subs)
-            rg_pct = sum(r.get('SIP Allocation %', 0) or 0
-                         for subs in groups[rg].values() for r in subs)
-            rg_count = sum(len(subs) for subs in groups[rg].values())
+            rg_count = uniq_count([r for subs in groups[rg].values() for r in subs])
             rows.append({'name': RG_DISPLAY.get(rg, rg),
-                         'amount': rg_amount, 'pct': rg_pct,
-                         'count': rg_count, 'level': 1})
+                         'amount': rg_amount, 'pct': pct_of(rg_amount),
+                         'count': rg_count, 'level': 1, 'bold': True})
             for sub, schemes in groups[rg].items():
                 sub_amount = sum(sip_amt(r) for r in schemes)
-                sub_pct = sum(r.get('SIP Allocation %', 0) or 0 for r in schemes)
                 rows.append({'name': _format_subcategory(sub),
-                             'amount': sub_amount, 'pct': sub_pct,
-                             'count': len(schemes), 'level': 2})
+                             'amount': sub_amount, 'pct': pct_of(sub_amount),
+                             'count': uniq_count(schemes), 'level': 2, 'bold': False})
 
     for rg, subs in groups.items():
         if rg in EQUITY_RGS:
             continue
         rg_amount = sum(sip_amt(r) for s in subs.values() for r in s)
-        rg_pct = sum(r.get('SIP Allocation %', 0) or 0 for s in subs.values() for r in s)
-        rg_count = sum(len(s) for s in subs.values())
+        rg_count = uniq_count([r for s in subs.values() for r in s])
         rows.append({'name': RG_DISPLAY.get(rg, rg),
-                     'amount': rg_amount, 'pct': rg_pct,
-                     'count': rg_count, 'level': 0})
+                     'amount': rg_amount, 'pct': pct_of(rg_amount),
+                     'count': rg_count, 'level': 0, 'bold': True})
         for sub, schemes in subs.items():
             sub_amount = sum(sip_amt(r) for r in schemes)
-            sub_pct = sum(r.get('SIP Allocation %', 0) or 0 for r in schemes)
             rows.append({'name': _format_subcategory(sub),
-                         'amount': sub_amount, 'pct': sub_pct,
-                         'count': len(schemes), 'level': 1})
+                         'amount': sub_amount, 'pct': pct_of(sub_amount),
+                         'count': uniq_count(schemes), 'level': 1, 'bold': False})
 
     return rows
 
@@ -1122,6 +1202,15 @@ def populate_slide4(prs, slide4_idx, section4):
         set_cell_text(row.cells[0], indent + name_txt)
         set_cell_text(row.cells[1], indent + alloc)
         set_cell_text(row.cells[2], indent + str(rd['count']))
+        # Bold from the row's explicit `bold` flag (set in build_sip_rows).
+        # Falls back to level<=1 if absent. Override the template's positional
+        # formatting — otherwise rows inherit boldness from whichever template
+        # row they got cloned from, which won't match the dynamic structure.
+        bold = rd.get('bold', rd.get('level', 0) <= 1)
+        for cell in row.cells:
+            for para in cell.text_frame.paragraphs:
+                for run in para.runs:
+                    run.font.bold = bold
 
     _sip_key = _detect_s4_schema(section4)['sip_amount']
     all_sip = [r for r in section4
@@ -1129,8 +1218,17 @@ def populate_slide4(prs, slide4_idx, section4):
                (_get_val(r, _sip_key, 'SIP Amount', 'SIP Allocation Amount') or 0) > 0]
     total_amount = sum(_get_val(r, _sip_key, 'SIP Amount', 'SIP Allocation Amount') or 0
                        for r in all_sip)
-    total_pct = sum(r.get('SIP Allocation %', 0) or 0 for r in all_sip)
-    total_count = len(all_sip)
+    # build_sip_rows normalises pct against the combined SIP amount, so the
+    # Total always sums to 100% by construction. Don't sum the per-row
+    # 'SIP Allocation %' column — with multiple SIPing users each user's
+    # share sums to 100% INDIVIDUALLY (combined: 200%+).
+    total_pct = 1.0
+    # Dedupe by ISIN / FUND_NAME so multi-user portfolios don't double-count
+    # the same scheme.
+    _seen = set()
+    for r in all_sip:
+        _seen.add(r.get('ISIN') or r.get('FUND_NAME') or id(r))
+    total_count = len(_seen)
     total_row = main_table.rows[len(main_table.rows) - 1]
     set_cell_text(total_row.cells[0], 'Total')
     set_cell_text(total_row.cells[1], f"{format_inr(total_amount)} | {round(total_pct * 100):g}%")
@@ -1355,7 +1453,11 @@ def populate_slide10(prs, slide10_idx, section1, section3, section4):
         vals = ' '.join(f"{d}={format_inr(rd[d][0])}/{rd[d][1]}%" for d in active_milestones)
         print(f"    {rd['name']:15s} cur={format_inr(rd['current'][0])}/{rd['current'][1]}%  {vals}")
 
-    # Update title shape — replace corpus amount and month count
+    # 'X tranches' = one per displayed milestone (T0, T1, T2 → 3 tranches)
+    n_tranches = len(active_milestones)
+    tranches_word = 'tranche' if n_tranches == 1 else 'tranches'
+
+    # Update title shape — replace corpus amount and tranche count
     for shape in slide.shapes:
         if shape.has_text_frame and 'transition plan for' in shape.text_frame.text.lower():
             for para in shape.text_frame.paragraphs:
@@ -1367,10 +1469,10 @@ def populate_slide10(prs, slide10_idx, section1, section3, section4):
                         full,
                         flags=re.IGNORECASE,
                     )
-                    # Update "ideal allocation in X months"
+                    # Update "ideal allocation in X months/tranches"
                     new_text = re.sub(
-                        r'(ideal allocation in\s*)\d+(\s*months?)',
-                        rf'\g<1>{last_month}\g<2>',
+                        r'(ideal allocation in\s*)\d+(\s*)(months?|tranches?)',
+                        rf'\g<1>{n_tranches}\g<2>{tranches_word}',
                         new_text,
                         flags=re.IGNORECASE,
                     )
@@ -1380,15 +1482,15 @@ def populate_slide10(prs, slide10_idx, section1, section3, section4):
                             r.text = ""
             break
 
-    # Update "ideal allocation in X months" — may be in a separate shape
+    # Update "ideal allocation in X months/tranches" — may be in a separate shape
     for shape in slide.shapes:
         if shape.has_text_frame and 'ideal allocation in' in shape.text_frame.text.lower():
             for para in shape.text_frame.paragraphs:
                 full = "".join(r.text for r in para.runs)
                 if 'ideal allocation in' in full.lower():
                     new_full = re.sub(
-                        r'(ideal allocation in\s*)\d+(\s*months?)',
-                        rf'\g<1>{last_month}\g<2>',
+                        r'(ideal allocation in\s*)\d+(\s*)(months?|tranches?)',
+                        rf'\g<1>{n_tranches}\g<2>{tranches_word}',
                         full,
                         flags=re.IGNORECASE,
                     )
@@ -1423,9 +1525,12 @@ def populate_slide10(prs, slide10_idx, section1, section3, section4):
                 grid_cols[col_idx].getparent().remove(grid_cols[col_idx])
         print(f"  Trimmed {total_cols - cols_to_keep} repeated milestone column(s)")
 
-    # Update header row milestone labels
+    # Update header row milestone labels — T-prefixed tranche labels:
+    # active_milestones is ['D0', 'D30', 'D60', ...] internally; on the
+    # slide we display them as 'Ideal - T0', 'Ideal - T1', ... (tranche
+    # index, not days).
     header_row = tbl.rows[0]
-    header_labels = ['Portfolio Allocation', 'Current'] + [f'Ideal - {d}' for d in active_milestones]
+    header_labels = ['Portfolio Allocation', 'Current'] + [f'Ideal - T{i}' for i in range(len(active_milestones))]
     for j, lbl in enumerate(header_labels):
         if j < len(header_row.cells):
             set_cell_text(header_row.cells[j], lbl)
@@ -1491,7 +1596,251 @@ def populate_slide10(prs, slide10_idx, section1, section3, section4):
                 _set_para_text(paras[1], f"EL {_fmt_tax(el)} + STCG {_fmt_tax(stcg)} + LTCG {_fmt_tax(ltcg_gain)}")
             break
 
+    # ── Per-user Sell / Buy / Retained / Tax breakdown ─────────────
+    # Slide 11 template has placeholders such as
+    #   "Total Sell: MFUserID1 - Amount Sold1, MFUserID2 - Amount Sold2, ..."
+    # which we replace with one CSV entry per actual user_id.
+    _populate_slide11_user_breakdown(slide, s4_data)
+
     print(f"  Slide 10: transition plan updated, corpus = {format_inr(total_pfv)}")
+
+
+def _per_user_summary(section4):
+    """Aggregate PF_MasterPlan rows by USER_ID. Excludes the Grand Total row.
+
+    Returns an OrderedDict keyed by user_id. Each value has:
+      mf_count      — number of non-cash rows
+      mf_value      — sum of 'Current Value Amount' for non-cash rows
+      cash_value    — sum of 'Current Value Amount' for cash rows
+      sell_d150     — sum of 'Cumm Sell Amount in D150'
+      buy_d150      — sum of 'Cumm Buy Amount in D150'
+      retained      — sum of 'Retained Value Amount'
+      tax_total     — sum of 'EL+STCG' + sum of 'Max LTCG'
+    Cash rows are identified by case-insensitive substring 'cash' in FUND_NAME.
+    """
+    out = OrderedDict()
+    for r in section4:
+        if r.get('__grand_total__'):
+            continue
+        uid = r.get('USER_ID')
+        if not uid or str(uid).strip().lower() == 'grand total':
+            continue
+        uid = str(uid).strip()
+        slot = out.setdefault(uid, dict(
+            mf_count=0, mf_value=0.0, cash_value=0.0,
+            sell_d150=0.0, buy_d150=0.0, retained=0.0, tax_total=0.0))
+        fname = str(r.get('FUND_NAME') or '').lower()
+        cur   = r.get('Current Value Amount') or 0
+        is_cash = 'cash' in fname
+        if is_cash:
+            slot['cash_value'] += cur
+        else:
+            slot['mf_count']  += 1
+            slot['mf_value']  += cur
+        slot['sell_d150'] += r.get('Cumm Sell Amount in D150') or 0
+        slot['buy_d150']  += r.get('Cumm Buy Amount in D150')  or 0
+        slot['retained']  += r.get('Retained Value Amount')    or 0
+        slot['tax_total'] += (r.get('EL+STCG') or 0) + (r.get('Max LTCG') or 0)
+    return out
+
+
+def _populate_slide11_user_breakdown(slide, s4_data):
+    """Replace per-user placeholder lines on the transition plan slide.
+
+    Looks for these literal-text shapes and rewrites their first paragraph
+    to a comma-separated 'UID - amount' list, one entry per user:
+      Total Sell:     → '... - <sell_d150 minus that user's cash>'
+      Total Buy :     → '... - <buy_d150>'
+      Total Retained: → '... - <retained>'
+      Total Tax line  → '... - <tax_total>' (the one without 'Tax Liability')
+    """
+    by_user = _per_user_summary(s4_data)
+    if not by_user:
+        return
+
+    def _fmt(v):
+        L = 100_000
+        if abs(v) >= L:
+            return f"{v/L:.2f}L"
+        K = 1_000
+        if abs(v) >= K:
+            return f"{v/K:.2f}K"
+        return f"{round(v)}"
+
+    # When there's only one user_id, drop the 'MFUserID - ' prefix and show
+    # just the values — the user_id hash adds noise without information.
+    single_user = len(by_user) == 1
+    def _entry(uid, val):
+        return _fmt(val) if single_user else f"{uid} - {_fmt(val)}"
+
+    sell_csv = ", ".join(_entry(uid, d['sell_d150'] - d['cash_value']) for uid, d in by_user.items())
+    buy_csv  = ", ".join(_entry(uid, d['buy_d150'])  for uid, d in by_user.items())
+    ret_csv  = ", ".join(_entry(uid, d['retained'])  for uid, d in by_user.items())
+    tax_csv  = ", ".join(_entry(uid, d['tax_total']) for uid, d in by_user.items())
+
+    for shape in slide.shapes:
+        if not shape.has_text_frame:
+            continue
+        txt = shape.text_frame.text
+        first = shape.text_frame.paragraphs[0]
+        # 'Tax Liability:' is the portfolio-total tax shape (handled above) — skip
+        if 'Tax Liability' in txt:
+            continue
+        if txt.startswith('Total Sell'):
+            _set_para_text(first, f"Total Sell: {sell_csv}")
+        elif txt.startswith('Total Buy'):
+            _set_para_text(first, f"Total Buy: {buy_csv}")
+        elif txt.startswith('Total Retained'):
+            _set_para_text(first, f"Total Retained: {ret_csv}")
+        elif 'Total Tax' in txt and 'MFUserID' in txt:
+            _set_para_text(first, tax_csv)
+
+
+def populate_slide3_user_summary(slide, section4):
+    """Slide 3 has a placeholder shape: 'MFUserID - "X" MFs + Y Cash'.
+    For each user_id, fill in one such line. When there are multiple users,
+    deepcopy the shape downward at fixed row pitch so each user gets a row."""
+    by_user = _per_user_summary(section4)
+    if not by_user:
+        return
+
+    placeholder = None
+    for shape in slide.shapes:
+        if shape.has_text_frame and 'MFUserID' in shape.text_frame.text and 'MFs' in shape.text_frame.text:
+            placeholder = shape; break
+    if placeholder is None:
+        return
+
+    def _fmt_cash(v):
+        L = 100_000
+        if abs(v) >= L:
+            return f"{v/L:.1f}L"
+        K = 1_000
+        if abs(v) >= K:
+            return f"{v/K:.1f}K"
+        return f"{round(v)}"
+
+    # Single-user portfolios drop the 'MFUserID - ' prefix entirely.
+    single_user = len(by_user) == 1
+    def _line(uid, d):
+        cash_txt = f" + {_fmt_cash(d['cash_value'])} Cash" if d['cash_value'] > 0 else ""
+        body = f"{_fmt_cash(d['mf_value'])} MFs{cash_txt}"
+        return body if single_user else f"{uid} - {body}"
+
+    users = list(by_user.items())
+    # First user goes into the existing shape
+    uid0, d0 = users[0]
+    _set_para_text(placeholder.text_frame.paragraphs[0], _line(uid0, d0))
+    # Additional users get deepcopy clones shifted down by the shape's height
+    if len(users) > 1:
+        from lxml import etree as _et
+        sp_tree = placeholder._element.getparent()
+        base_top = placeholder.top
+        pitch    = placeholder.height + 30000   # ~0.03in gap between rows
+        for i, (uid, d) in enumerate(users[1:], start=1):
+            clone = copy.deepcopy(placeholder._element)
+            sp_tree.append(clone)
+            # Reset shape-id on the clone so PPT doesn't choke on duplicates
+            for sp_pr in clone.iter('{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}nvSpPr'):
+                pass
+            # Update the spPr/xfrm offset top
+            for off in clone.iter('{http://schemas.openxmlformats.org/drawingml/2006/main}off'):
+                off.set('y', str(int(base_top + pitch * i)))
+            # Update text via re-parsed shape
+            from pptx.shapes.autoshape import Shape
+            new_shape = Shape(clone, placeholder._parent)
+            paras = new_shape.text_frame.paragraphs
+            if paras:
+                _set_para_text(paras[0], _line(uid, d))
+
+
+def populate_schemes_not_selected(prs, pf_selection):
+    """Fill the 'Schemes not selected' slide table with rows that have
+    Action == 'Keep with customer'. Resizes the existing 2-col table to
+    match the actual count. Header row is preserved."""
+    if not pf_selection:
+        # Delete both the content slide AND its '05' section divider so an
+        # empty section doesn't dangle. Divider has 'List of schemes not
+        # selected' as its caption text. Delete divider FIRST (higher idx
+        # safer to delete first to keep earlier indices stable).
+        content_idx = find_slide_by_text(prs, "Schemes not selected")
+        divider_idx = find_slide_by_text(prs, "List of schemes not selected")
+        # Sort descending so earlier deletes don't shift later indices
+        for idx in sorted({i for i in (content_idx, divider_idx) if i is not None}, reverse=True):
+            delete_slide(prs, idx)
+        print("  Slide 'Schemes not selected': no Keep-with-customer rows — slide + divider deleted")
+        return
+
+    idx = find_slide_by_text(prs, "Schemes not selected")
+    if idx is None:
+        return
+    slide = prs.slides[idx]
+    tbl_shape = None
+    for shp in slide.shapes:
+        if shp.has_table:
+            tbl_shape = shp; break
+    if tbl_shape is None:
+        return
+    tbl = tbl_shape.table
+    target = len(pf_selection) + 1  # +1 for header
+    current = len(tbl.rows)
+    if target > current:
+        for _ in range(target - current):
+            add_table_row(tbl, copy_from_row_idx=1)
+    elif target < current:
+        for _ in range(current - target):
+            _remove_last_table_row(tbl)
+    has_sr_col = (
+        len(tbl.rows) >= 1 and len(tbl.rows[0].cells) >= 4
+        and 'sr' in tbl.rows[0].cells[0].text_frame.text.strip().lower()
+    )
+    # Inherit Sr.No. font size from header (template often leaves rows 3+
+    # without an explicit size → they render at the layout default).
+    sr_size_pt = None
+    if has_sr_col:
+        for p in tbl.rows[0].cells[0].text_frame.paragraphs:
+            for r in p.runs:
+                if r.font.size:
+                    sr_size_pt = r.font.size.pt; break
+            if sr_size_pt: break
+
+    def _force_size(cell, pt):
+        if pt is None: return
+        from pptx.util import Pt
+        for p in cell.text_frame.paragraphs:
+            for r in p.runs:
+                r.font.size = Pt(pt)
+
+    for i, row in enumerate(pf_selection):
+        cells = tbl.rows[i + 1].cells
+        if has_sr_col:
+            set_cell_text(cells[0], f"{i + 1}.")
+            _force_size(cells[0], sr_size_pt)
+            set_cell_text(cells[1], row['scheme'])
+            if len(cells) > 2: set_cell_text(cells[2], format_inr(row.get('value', 0)))
+            if len(cells) > 3: set_cell_text(cells[3], row['reason'])
+        else:
+            set_cell_text(cells[0], row['scheme'])
+            if len(cells) >= 2:
+                set_cell_text(cells[1], row['reason'])
+    # Populate 'Total Not Selected: <amount>' text shape below the table
+    total_val = sum(r.get('value', 0) for r in pf_selection)
+    for shp in slide.shapes:
+        if not shp.has_text_frame or shp.has_table:
+            continue
+        if shp.text_frame.text.strip().lower().startswith('total '):
+            paras = shp.text_frame.paragraphs
+            if paras:
+                _set_para_text(paras[0], f"Total Not Selected: {format_inr(total_val)}")
+            break
+    print(f"  Slide 'Schemes not selected': filled {len(pf_selection)} rows, total {format_inr(total_val)}")
+
+
+def _remove_last_table_row(table):
+    tbl_el = table._tbl
+    rows = tbl_el.findall('.//{http://schemas.openxmlformats.org/drawingml/2006/main}tr')
+    if rows:
+        tbl_el.remove(rows[-1])
 
 
 # ---------------------------------------------------------------------------
@@ -1706,7 +2055,7 @@ def _update_label_shape(shape, rg, schemes, pct_key):
       B) Single paragraph with <a:br/> line-break — Hybrid/Gold/etc slides.
     Both are handled here.
     """
-    label1 = RG_LABEL1.get(rg, rg)
+    label1 = RG_LABEL1_DISPLAY.get(rg, RG_LABEL1.get(rg, rg))
     total_pct = sum((r.get(pct_key, 0) or 0) for r in schemes) * 100
     total_pct_str = f"{round(total_pct, 1):g}"
 
@@ -1922,6 +2271,18 @@ def populate_sip_scheme_slides(prs, section4, ref_data, rr_category):
                 groups[rg][sub], list(dict.fromkeys([sip_amt_key, 'SIP Allocation %', 'SIP Amount']))
             )
 
+    # Normalise SIP Allocation % across the combined SIP pool. With multiple
+    # SIPing users each user's per-row %s sum to 100% INDIVIDUALLY (combined
+    # 200%+), so the per-scheme slides would show inflated shares. Rewrite
+    # the column as scheme_sip_amount / total_combined_sip_amount.
+    def _amt(r):
+        return _get_val(r, sip_amt_key, 'SIP Amount', 'SIP Allocation Amount') or 0
+    total_amount = sum(_amt(r) for subs in groups.values() for s in subs.values() for r in s) or 1.0
+    for rg in groups:
+        for sub in groups[rg]:
+            for r in groups[rg][sub]:
+                r['SIP Allocation %'] = _amt(r) / total_amount   # fraction 0..1
+
     _build_scheme_slides(prs, groups, SIP_TEMPLATE, 'SIP Allocation %', ref_data, rr_category)
     print("  SIP scheme slides populated")
 
@@ -1960,8 +2321,15 @@ MAX_ROWS_PER_SLIDE = 15
 
 
 
-def _fill_action_table(table, schemes, name_key, value_key):
-    """Populate an action table. Header is row 0; data starts at row 1."""
+def _fill_action_table(table, schemes, name_key, value_key, sr_offset=0):
+    """Populate an action table. Header is row 0; data starts at row 1.
+
+    Supports two header layouts:
+      - 3-col legacy:  [Scheme Name | Value | Reason]
+      - 4-col current: [Sr. No. | Scheme Name | Retained Value | Reason]
+    Detection: if cells[0] of header reads 'Sr. No' (case-insensitive), 4-col.
+    sr_offset lets overflow pages continue numbering (page 2 starts at sr_offset+1).
+    """
     current_data = len(table.rows) - 1
     target = len(schemes)
 
@@ -1972,14 +2340,62 @@ def _fill_action_table(table, schemes, name_key, value_key):
         for _ in range(current_data - target):
             delete_table_row(table, len(table.rows) - 1)
 
+    has_sr_col = (
+        len(table.rows) >= 1 and len(table.rows[0].cells) >= 4
+        and 'sr' in table.rows[0].cells[0].text_frame.text.strip().lower()
+    )
+
+    # Pick the Sr.No. font size from the header — many templates only set an
+    # explicit size on the header + first 2 data cells, leaving rows 3+ with
+    # no size attribute (which renders at the layout default ~18pt). Copy
+    # the header's size onto every Sr.No. cell we write so the column reads
+    # consistently.
+    sr_size_pt = None
+    if has_sr_col:
+        for p in table.rows[0].cells[0].text_frame.paragraphs:
+            for r in p.runs:
+                if r.font.size:
+                    sr_size_pt = r.font.size.pt; break
+            if sr_size_pt: break
+
+    def _force_size(cell, pt):
+        if pt is None: return
+        from pptx.util import Pt
+        for p in cell.text_frame.paragraphs:
+            for r in p.runs:
+                r.font.size = Pt(pt)
+
     for i, scheme in enumerate(schemes):
         row = table.rows[i + 1]
-        set_cell_text(row.cells[0], scheme.get(name_key, '') or '')
-        # Try value_key and a common "Amount" variant (handles both old/new Excel formats)
         val = _get_val(scheme, value_key, value_key + ' Amount', value_key.replace(' Amount', '')) or 0
-        set_cell_text(row.cells[1], format_inr(val))
-        if len(row.cells) > 2:
-            set_cell_text(row.cells[2], scheme.get('Reason', '') or '')
+        if has_sr_col:
+            set_cell_text(row.cells[0], f"{sr_offset + i + 1}.")
+            _force_size(row.cells[0], sr_size_pt)
+            set_cell_text(row.cells[1], scheme.get(name_key, '') or '')
+            set_cell_text(row.cells[2], format_inr(val))
+            if len(row.cells) > 3:
+                set_cell_text(row.cells[3], scheme.get('Reason', '') or '')
+        else:
+            set_cell_text(row.cells[0], scheme.get(name_key, '') or '')
+            set_cell_text(row.cells[1], format_inr(val))
+            if len(row.cells) > 2:
+                set_cell_text(row.cells[2], scheme.get('Reason', '') or '')
+
+
+def _populate_action_total(slide, label_text, total_value):
+    """Find the 'Total <X>:' text shape on an action slide and append the
+    grand-total value to its first paragraph. Match is by 'Total ' prefix
+    plus the action label so each slide only updates its own total box."""
+    for shape in slide.shapes:
+        if not shape.has_text_frame or shape.has_table:
+            continue
+        txt = shape.text_frame.text.strip()
+        if txt.lower().startswith('total ') and label_text.lower() in txt.lower():
+            paras = shape.text_frame.paragraphs
+            if paras:
+                _set_para_text(paras[0], f"Total {label_text}: {format_inr(total_value)}")
+            return True
+    return False
 
 
 def _remove_section_from_slide(slide, label_text, header_text):
@@ -2103,18 +2519,28 @@ def _populate_single_action(prs, slide_idx, label_text, schemes, name_key, value
     # Fill first page on original slide
     tbl = _find_table_near_label(original, label_text, None)
     if tbl:
-        _fill_action_table(tbl.table, pages[0], name_key, value_key)
+        _fill_action_table(tbl.table, pages[0], name_key, value_key, sr_offset=0)
     else:
         print(f"  WARNING: table for '{label_text}' not found on slide {slide_idx}")
 
+    # Grand total across ALL pages — same number on every overflow slide so a
+    # reader can pick up any one and see the action's full value.
+    def _val(s):
+        return _get_val(s, value_key, value_key + ' Amount', value_key.replace(' Amount', '')) or 0
+    grand_total = sum(_val(s) for s in schemes)
+    _populate_action_total(original, label_text, grand_total)
+
     # Overflow: clone the (already-stripped) original slide for each additional page
     current_idx = slide_idx
+    sr_offset = len(pages[0])
     for page in pages[1:]:
         current_idx = duplicate_slide_after(prs, current_idx)
         dup = prs.slides[current_idx]
         tbl2 = _find_table_near_label(dup, label_text, None)
         if tbl2:
-            _fill_action_table(tbl2.table, page, name_key, value_key)
+            _fill_action_table(tbl2.table, page, name_key, value_key, sr_offset=sr_offset)
+        _populate_action_total(dup, label_text, grand_total)
+        sr_offset += len(page)
 
 
 def _dedup_by_fund(rows, value_keys):
@@ -2311,6 +2737,8 @@ def generate_deck(excel_data, client_name, ref_data=None, rr_category=None):
     # Slide 3 (idx 2) — "A quick recap, Hari" also uses first name
     first_name = client_name.split()[0]
     replace_text_preserving_format(prs.slides[2], "Hari", first_name)
+    # Slide 3 also carries one or more 'MFUserID - X MFs + Y Cash' rows
+    populate_slide3_user_summary(prs.slides[2], excel_data['section4'])
 
     # Slide 4 (idx 3) — SIP summary
     slide4_idx = find_slide_by_text(prs, "ideal SIP strategy")
@@ -2357,6 +2785,9 @@ def generate_deck(excel_data, client_name, ref_data=None, rr_category=None):
     # Action slides
     print("[6/6] Action slides...")
     populate_action_slides(prs, excel_data['section4'])
+
+    # Schemes-not-selected slide (sourced from PF_Selection 'Keep with customer' rows)
+    populate_schemes_not_selected(prs, excel_data.get('pf_selection') or [])
 
     # Save to BytesIO
     buf = BytesIO()
