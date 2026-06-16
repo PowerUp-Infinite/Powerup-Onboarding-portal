@@ -783,43 +783,68 @@ def do_slide3(prs, q_row, risk_profile, pf_row=None, resolved_age=''):
         step_up *= 100
     has_stepup = step_up > 0
 
+    # Content-based shape lookup. Earlier code matched by hardcoded shape
+    # names ('Google Shape;127;p18' etc.), but Google Slides re-numbers shape
+    # names on every template edit (p18 -> p30 etc.), silently breaking the
+    # populate. Matching by current text/pattern is stable across edits.
+    _RISK_VALUES = set(RISK_SCALE)
     shapes_to_remove = []
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
+        cur = shape.text_frame.text.strip()
+        if not cur:
+            continue
 
-        if shape.name == 'Google Shape;129;p18':
-            _set_goals_text(shape, goals)
-
-        elif shape.name == 'Google Shape;125;p18':
-            replace_text(shape, horizon)
-            print(f"  Slide 3: horizon -> '{horizon}'")
-
-        elif shape.name == 'Google Shape;123;p18':
-            _set_investment_text(shape, lump_str, sip_str, has_stepup)
-
-        elif shape.name == 'Google Shape;127;p18':
+        # Risk Profile value (e.g. 'Very Aggressive') — text is one of the
+        # five canonical RISK_SCALE strings on its own.
+        if cur in _RISK_VALUES:
             replace_text(shape, risk_profile)
             print(f"  Slide 3: risk profile -> '{risk_profile}'")
+            continue
 
-        elif shape.name == 'Google Shape;130;p18':
+        # 'X Investor' label below the diagram.
+        if cur.endswith(' Investor') and cur.rsplit(' ', 1)[0] in _RISK_VALUES:
             replace_text(shape, f'{risk_profile} Investor')
+            continue
 
-        elif shape.name in ('Google Shape;132;p18', 'Google Shape;133;p18'):
-            # Shape 132 = age, shape 133 = SIP step-up. (Older templates
-            # had both as ;132;p18 — the text-content check handles both.)
-            cur = shape.text_frame.text.strip()
-            if 'SIP' in cur or 'Step' in cur or 'step' in cur:
-                if has_stepup:
-                    replace_text(shape, f'SIP Step-Up every year: {step_up:.0f}%')
-                    print(f"  Slide 3: SIP step-up -> {step_up:.0f}%")
-                else:
-                    shapes_to_remove.append(shape)
-                    print("  Slide 3: SIP step-up = 0, removing text box")
+        # Goals — current value is a goals list (often the first goal name).
+        # Detect by exact match against any known goal label currently on the
+        # template OR by being the dedicated goals shape (multi-line goal
+        # list). Use 'Retirement Planning' as the sentinel — every template
+        # ships with it as the default first goal.
+        if cur == 'Retirement Planning' or '\n' in cur and any(
+                g in cur for g in ('Retirement', 'Home', 'Children', 'Vehicle', 'Wealth')):
+            _set_goals_text(shape, goals)
+            continue
+
+        # Investment horizon — pattern '<N>+? Years'.
+        if re.fullmatch(r'\d+\+?\s*Years?', cur, flags=re.IGNORECASE):
+            replace_text(shape, horizon)
+            print(f"  Slide 3: horizon -> '{horizon}'")
+            continue
+
+        # Investment with Infinite — 'INR <X> with INR <Y> monthly SIP*'.
+        if 'INR' in cur and 'monthly SIP' in cur:
+            _set_investment_text(shape, lump_str, sip_str, has_stepup)
+            continue
+
+        # Age — 'Current Age: NN'.
+        if cur.lower().startswith('current age'):
+            if age:
+                replace_text(shape, f'Current Age: {age}')
+                print(f"  Slide 3: age -> '{age}'")
+            continue
+
+        # SIP step-up — 'SIP Step-Up every year: N%'.
+        if 'sip step' in cur.lower() or 'step-up' in cur.lower():
+            if has_stepup:
+                replace_text(shape, f'SIP Step-Up every year: {step_up:.0f}%')
+                print(f"  Slide 3: SIP step-up -> {step_up:.0f}%")
             else:
-                if age:
-                    replace_text(shape, f'Current Age: {age}')
-                    print(f"  Slide 3: age -> '{age}'")
+                shapes_to_remove.append(shape)
+                print("  Slide 3: SIP step-up = 0, removing text box")
+            continue
 
     # Remove shapes after iteration to avoid modifying the collection mid-loop
     sp_tree = slide.shapes._spTree
