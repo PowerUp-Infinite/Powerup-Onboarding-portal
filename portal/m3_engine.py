@@ -2283,7 +2283,32 @@ def populate_sip_scheme_slides(prs, section4, ref_data, rr_category):
             for r in groups[rg][sub]:
                 r['SIP Allocation %'] = _amt(r) / total_amount   # fraction 0..1
 
-    _build_scheme_slides(prs, groups, SIP_TEMPLATE, 'SIP Allocation %', ref_data, rr_category)
+    # Template ships SIP slides for Aggressive / Balanced / Conservative /
+    # Hybrid / Gold & Silver only — Global was historically corpus-only.
+    # If Global has SIPs, clone the Gold & Silver SIP slide and relabel it
+    # 'Global | …' so _find_scheme_slide_for_rg(rg='Global') can locate it.
+    sip_template = dict(SIP_TEMPLATE)
+    if 'Global' in groups and 'Global' not in sip_template:
+        gold_idx = _find_scheme_slide_for_rg(prs, 'Gold & Silver', is_sip=True)
+        if gold_idx is not None:
+            new_idx = duplicate_slide_after(prs, gold_idx)
+            label_shape = _find_label_shape(prs.slides[new_idx])
+            if label_shape is not None:
+                # Seed the label with 'Global | 0%' so the lookup-by-text
+                # finds it; _update_label_shape will rewrite with the real
+                # total% + sub list during _build_scheme_slides.
+                paras = label_shape.text_frame.paragraphs
+                if paras:
+                    _set_para_text(paras[0], 'Global | 0%')
+                # Layout B (Hybrid/Gold) keeps a vertical-tab line break in
+                # the same paragraph — clear any leftover sub list so the
+                # _update pass writes Global's own.
+                if len(paras) >= 2:
+                    _set_para_text(paras[1], '')
+            sip_template['Global'] = new_idx
+            print(f"  Cloned Gold & Silver SIP slide for Global at idx {new_idx}")
+
+    _build_scheme_slides(prs, groups, sip_template, 'SIP Allocation %', ref_data, rr_category)
     print("  SIP scheme slides populated")
 
 
