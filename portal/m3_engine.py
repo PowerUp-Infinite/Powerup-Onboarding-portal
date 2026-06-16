@@ -2801,9 +2801,9 @@ def generate_deck(excel_data, client_name, ref_data=None, rr_category=None):
     if len(name_parts) == 1:
         name_token = name_parts[0]
     else:
-        name_token = f"{name_parts[0]}_{name_parts[-1]}"
+        name_token = f"{name_parts[0]} {name_parts[-1]}"
     today_str = datetime.now().strftime('%d%m%Y')
-    filename = f'PowerUp_Infinite_{name_token}_Portfolio_Transition_{today_str}.pptx'
+    filename = f'PowerUp Infinite_{name_token}_Portfolio Transition_{today_str}.pptx'
 
     print(f"\n{'='*60}")
     print(f"  DONE  ->  {filename}")

@@ -101,7 +101,20 @@ def _call_apps_script(pf_id: str) -> dict:
     return data
 
 
-def generate(xlsx_path: str, pf_id: str) -> dict:
+_FILE_ID_RE = __import__('re').compile(r'/d/([a-zA-Z0-9_-]+)')
+
+
+def _rename_drive_file(file_id: str, new_name: str) -> None:
+    """Rename the Apps Script-produced report via Drive API."""
+    from google_auth import get_drive_service
+    drive = get_drive_service()
+    drive.files().update(
+        fileId=file_id, body={'name': new_name},
+        supportsAllDrives=True,
+    ).execute()
+
+
+def generate(xlsx_path: str, pf_id: str, client_name: str = '') -> dict:
     """Run the full M1 pipeline. Returns {'url', 'title'}."""
     PROGRESS(f"[1/2] Syncing uploaded data for PF_ID {pf_id}...")
     synced = _sync_excel_to_sheets(xlsx_path, pf_id)
@@ -115,7 +128,21 @@ def generate(xlsx_path: str, pf_id: str) -> dict:
 
     PROGRESS(f"[2/2] Generating M1 report for {pf_id}...")
     result = _call_apps_script(pf_id)
-    return {
-        'url': result.get('url', ''),
-        'title': result.get('title', f'M1 Report — {pf_id}'),
-    }
+    url   = result.get('url', '')
+    title = result.get('title', f'M1 Report — {pf_id}')
+
+    # Rename the Apps Script output to '<client_name> Scheme Level Data'.
+    # Falls back to pf_id when no name is available so the file still has
+    # a deterministic shape; silently skips rename on Drive errors so a
+    # successful generation isn't lost to a follow-up failure.
+    name_token = (client_name or pf_id or 'Client').strip()
+    new_name = f"{name_token} Scheme Level Data"
+    m = _FILE_ID_RE.search(url)
+    if m:
+        try:
+            _rename_drive_file(m.group(1), new_name)
+            title = new_name
+        except Exception as e:
+            PROGRESS(f"  WARN: could not rename Drive file: {e}")
+
+    return {'url': url, 'title': title}

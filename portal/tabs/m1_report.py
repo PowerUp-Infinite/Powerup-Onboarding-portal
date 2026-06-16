@@ -385,6 +385,25 @@ def render():
         sheet_url = result.get("url", "")
         sheet_title = result.get("title", "Generated Report")
 
+        # Rename Drive file to '<Name> Scheme Level Data'. `display` is the
+        # picker's chosen client label; falls back to PF_ID. Best-effort —
+        # don't fail the whole flow if rename trips a Drive permission error.
+        if sheet_url:
+            import re as _re
+            m = _re.search(r'/d/([a-zA-Z0-9_-]+)', sheet_url)
+            if m:
+                name_token = (display or selected_pf_id or 'Client').strip()
+                new_name = f"{name_token} Scheme Level Data"
+                try:
+                    from google_auth import get_drive_service
+                    get_drive_service().files().update(
+                        fileId=m.group(1), body={'name': new_name},
+                        supportsAllDrives=True,
+                    ).execute()
+                    sheet_title = new_name
+                except Exception as e:
+                    st.caption(f"(Could not rename Drive file: {e})")
+
         if not sheet_url:
             st.warning(
                 "Report generated but no URL returned. "

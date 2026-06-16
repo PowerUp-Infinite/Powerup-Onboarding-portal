@@ -129,6 +129,7 @@ def list_clients_in_excel(xlsx_path: str) -> list[tuple[str, str]]:
     # rows where PF_level doesn't carry a name. Optional — empty if no tab.
     name_age = data.get('name_age', pd.DataFrame())
     na_lookup: dict[str, str] = {}
+    na_first_name: str = ''
     if not name_age.empty and 'USER_ID' in name_age.columns:
         na_name_col = next((c for c in name_age.columns
                             if c.upper() == 'NAME'), None)
@@ -138,6 +139,8 @@ def list_clients_in_excel(xlsx_path: str) -> list[tuple[str, str]]:
                 nm  = str(r.get(na_name_col, '')).strip()
                 if uid and uid.lower() != 'nan' and nm and nm.lower() != 'nan':
                     na_lookup[uid] = nm
+                    if not na_first_name:
+                        na_first_name = nm
 
     clients: list[tuple[str, str]] = []
     for _, row in pf_level.drop_duplicates('PF_ID').iterrows():
@@ -152,7 +155,11 @@ def list_clients_in_excel(xlsx_path: str) -> list[tuple[str, str]]:
                 if s and s.lower() != 'nan':
                     nm = s
         if not nm:
-            nm = na_lookup.get(pid, '')
+            # First try USER_ID match (PF_ID == USER_ID is rare but happens),
+            # then fall back to the first name in name_age — enough to drive
+            # the questionnaire fuzzy match even for family-portfolio PF_IDs
+            # like 'PF000026' that have no direct USER_ID mapping.
+            nm = na_lookup.get(pid) or na_first_name
         clients.append((pid, nm))
 
     # Sort: rows with names first (alphabetical), then nameless PF_IDs.

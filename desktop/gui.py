@@ -635,7 +635,13 @@ class M1Tab(_BaseTab):
 
     def _run_generation(self) -> dict:
         assert self.xlsx_path and self.selected_pf_id
-        result = m1_worker.generate(self.xlsx_path, self.selected_pf_id)
+        client_name = next(
+            (n for pid, n in self.clients if pid == self.selected_pf_id),
+            '',
+        )
+        result = m1_worker.generate(
+            self.xlsx_path, self.selected_pf_id, client_name=client_name,
+        )
         return {'url': result['url'], 'name': result['title']}
 
 
@@ -805,11 +811,23 @@ class M2Tab(_BaseTab):
             )
             return
 
-        from difflib import SequenceMatcher
-        cl = client_name.lower().strip()
+        # Token-overlap match (same as the engine's name_age matcher) so
+        # word-reordered names like "Mathur Jaideep Rahul" still match
+        # "Rahul Mathur" — SequenceMatcher's char-level ratio penalises
+        # those too hard (≈0.375).
+        import re as _re
+        def _tokens(s):
+            return {t for t in _re.split(r'\s+', s.lower().strip()) if t}
+        cl_tokens = _tokens(client_name)
         best, score = None, 0.0
         for n in self._q_names:
-            s = SequenceMatcher(None, cl, n.lower().strip()).ratio()
+            n_tokens = _tokens(n)
+            if not cl_tokens or not n_tokens:
+                continue
+            # Min-denominator overlap so "Niloufer" alone matches
+            # "Niloufer Dundh" 100%.
+            inter = cl_tokens & n_tokens
+            s = len(inter) / min(len(cl_tokens), len(n_tokens))
             if s > score:
                 score, best = s, n
 
