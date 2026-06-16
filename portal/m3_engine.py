@@ -452,6 +452,64 @@ def _normalize_rg(rg):
     return _RG_NORMALIZE.get(rg, rg)
 
 
+def _resolve_rg(row):
+    """Risk-group lookup with fallback chain for untagged rows.
+
+    Order:
+      1. RISK_GROUP_L0 (after normalisation) — the canonical source
+      2. UPDATED_BROAD_CATEGORY_GROUP — direct one-to-one for Global/Debt/etc.
+      3. UPDATED_SUBCATEGORY heuristic — pattern-match on the subcategory code
+      4. 'Other' — last resort bucket so the row isn't silently dropped
+
+    Without this fallback, any scheme row whose RISK_GROUP_L0 is blank
+    (typically fresh-buy rows added by the curation tool without a tag)
+    gets dropped from per-RG aggregation, making the transition table
+    total fall short of 100%.
+    """
+    raw = row.get('RISK_GROUP_L0') or ''
+    rg = _normalize_rg(str(raw).strip())
+    if rg:
+        return rg
+
+    bc = (row.get('UPDATED_BROAD_CATEGORY_GROUP') or '').strip()
+    if bc:
+        bc_n = _normalize_rg(bc)
+        # Map common broad-category labels onto known risk-group keys.
+        if bc_n.lower() in ('global', 'international'):
+            return 'Global'
+        if bc_n.lower() in ('hybrid', 'allocation'):
+            return 'Hybrid'
+        if bc_n.lower() in ('debt', 'fixed income'):
+            return 'Debt Like'
+        if 'gold' in bc_n.lower() or 'silver' in bc_n.lower() or 'commodit' in bc_n.lower():
+            return 'Gold & Silver'
+        if 'solution' in bc_n.lower():
+            return 'Solution'
+        # If the broad category itself is already a valid RG key, use it
+        if bc_n in _RG_NORMALIZE.values() or bc_n in ('Global', 'Hybrid', 'Debt Like',
+                                                     'Gold & Silver', 'Solution'):
+            return bc_n
+
+    sub = (row.get('UPDATED_SUBCATEGORY') or '').strip()
+    sub_u = sub.upper()
+    if sub_u:
+        if sub_u == 'GLOBAL' or 'GLOBAL_' in sub_u or 'INTERNATIONAL' in sub_u:
+            return 'Global'
+        if sub_u.startswith('COMMODITY_') or 'GOLD' in sub_u or 'SILVER' in sub_u:
+            return 'Gold & Silver'
+        if sub_u in ('LIQUID', 'ARBITRAGE_FUND', 'OVERNIGHT', 'ULTRA_SHORT_DURATION',
+                     'MONEY_MARKET') or sub_u.startswith('DEBT_') or 'FUND_OF_FUNDS' in sub_u:
+            return 'Debt Like'
+        if sub_u in ('DYNAMIC_ASSET_ALLOCATION', 'MULTI_ASSET_ALLOCATION',
+                     'AGGRESSIVE_ALLOCATION', 'EQUITY_SAVINGS', 'BALANCED_ADVANTAGE',
+                     'CONSERVATIVE_HYBRID', 'EQUITY_DEBT') or 'HYBRID' in sub_u:
+            return 'Hybrid'
+        if 'SOLUTION' in sub_u or sub_u in ('RETIREMENT', 'CHILDREN'):
+            return 'Solution'
+
+    return 'Other'
+
+
 def _format_subcategory(sub):
     """Convert subcategory codes to readable text.
     Uses SUBCATEGORY_DISPLAY if available, otherwise converts
@@ -952,7 +1010,7 @@ def _group_sip_schemes(section4):
             continue
         if not (_get_val(row, sip_amt_key, 'SIP Amount', 'SIP Allocation Amount') or 0):
             continue
-        rg = _normalize_rg(row.get('RISK_GROUP_L0', ''))
+        rg = _resolve_rg(row)
         sub = row.get('UPDATED_SUBCATEGORY', '')
         groups.setdefault(rg, OrderedDict()).setdefault(sub, []).append(row)
     return groups, sip_amt_key
@@ -1135,7 +1193,7 @@ def _build_transition_data(section3, section4, section1=None):
         for row in section4:
             if row.get('__grand_total__'):
                 continue
-            rg = _normalize_rg(row.get('RISK_GROUP_L0', ''))
+            rg = _resolve_rg(row)
             if not rg:
                 continue
             cur = row.get('Current Value Amount') or 0
@@ -1172,7 +1230,7 @@ def _build_transition_data(section3, section4, section1=None):
 
         known_rgs = set(SIP_TEMPLATE.keys()) | set(CORPUS_TEMPLATE.keys())
         known_rgs.update(
-            _normalize_rg(row.get('RISK_GROUP_L0', ''))
+            _resolve_rg(row)
             for row in section4
             if not row.get('__grand_total__') and row.get('RISK_GROUP_L0')
         )
@@ -1190,7 +1248,7 @@ def _build_transition_data(section3, section4, section1=None):
         for row in section4:
             if row.get('__grand_total__'):
                 continue
-            rg = _normalize_rg(row.get('RISK_GROUP_L0', ''))
+            rg = _resolve_rg(row)
             if rg not in rg_cumm_buy:
                 rg_cumm_buy[rg] = {col: 0.0 for col in cum_buy_cols.values()}
             for d, col in cum_buy_cols.items():
@@ -1853,7 +1911,7 @@ def populate_sip_scheme_slides(prs, section4, ref_data, rr_category):
             continue
         if not (_get_val(row, sip_amt_key, 'SIP Amount', 'SIP Allocation Amount') or 0):
             continue
-        rg = _normalize_rg(row.get('RISK_GROUP_L0', ''))
+        rg = _resolve_rg(row)
         sub = row.get('UPDATED_SUBCATEGORY', '')
         groups.setdefault(rg, OrderedDict()).setdefault(sub, []).append(row)
 
@@ -1878,7 +1936,7 @@ def populate_corpus_scheme_slides(prs, section4, ref_data, rr_category):
             continue
         if not (_get_val(row, corpus_pct_key, 'Total Value as % of PF', 'Total Allocation % of PF') or 0):
             continue
-        rg = _normalize_rg(row.get('RISK_GROUP_L0', ''))
+        rg = _resolve_rg(row)
         sub = row.get('UPDATED_SUBCATEGORY', '')
         groups.setdefault(rg, OrderedDict()).setdefault(sub, []).append(row)
 
