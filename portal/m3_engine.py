@@ -1507,8 +1507,61 @@ def populate_slide10(prs, slide10_idx, section1, section3, section4):
         return
     tbl = tbl_shape.table
 
+    # If the data needs more milestone columns than the template provides
+    # (ships with 3 T-cols), expand. The template's RIGHTMOST T-col is
+    # deliberately bold to highlight the 'final state' — so we clone the
+    # second-to-last (non-bold) milestone column as the template for new
+    # columns, and shrink existing T-col widths modestly so the table
+    # extends only slightly to the right.
+    needed = 2 + len(active_milestones)
+    current = len(tbl.columns)
+    if needed > current:
+        n_extra = needed - current
+        tbl_xml = tbl._tbl
+        grid_cols = tbl_xml.findall(qn('a:tblGrid') + '/' + qn('a:gridCol'))
+
+        # Pick a NON-BOLD column as the clone source so new cols don't
+        # inherit the 'final state' bold formatting. Prefer the second-to-
+        # last milestone col; fall back to the last one if only one exists.
+        ml_grid_cols = grid_cols[2:]
+        src_grid = ml_grid_cols[-2] if len(ml_grid_cols) >= 2 else ml_grid_cols[-1]
+        src_grid_w = int(src_grid.get('w'))
+
+        # Shrink existing milestone widths modestly so 5+ cols fit in a
+        # reasonable horizontal envelope without forcing text to wrap.
+        # Heuristic: target each milestone col at ~0.78× the original width.
+        SHRINK = 0.78
+        new_w = max(int(src_grid_w * SHRINK), 700000)   # ≥0.77in
+        for c in ml_grid_cols:
+            c.set('w', str(new_w))
+        for _ in range(n_extra):
+            new_grid = copy.deepcopy(src_grid)
+            new_grid.set('w', str(new_w))
+            src_grid.getparent().append(new_grid)
+
+        # For each row, clone from the same INDEX as src_grid (i.e. the
+        # second-to-last existing cell) so cell formatting matches the
+        # non-bold template column. Then move the originally-bold LAST cell
+        # to remain the rightmost so the 'final state' highlight stays
+        # correct.
+        src_tc_idx = len(grid_cols) - 2 if len(ml_grid_cols) >= 2 else len(grid_cols) - 1
+        for tr in tbl_xml.findall(qn('a:tr')):
+            tcs = tr.findall(qn('a:tc'))
+            if not tcs:
+                continue
+            src_tc  = tcs[src_tc_idx]
+            last_tc = tcs[-1]                        # the BOLD one
+            # Detach the bold last cell, append clones of src_tc, then re-
+            # attach last_tc at the end so it remains rightmost.
+            tr.remove(last_tc)
+            for _ in range(n_extra):
+                tr.append(copy.deepcopy(src_tc))
+            tr.append(last_tc)
+        print(f"  Added {n_extra} milestone column(s) to fit "
+              f"{len(active_milestones)}-tranche schedule "
+              f"(cloned from non-bold col, bold preserved on final col)")
+
     # Remove columns for milestones that are trimmed (from right to left)
-    # Table columns: 0=name, 1=Current, 2=D0, 3=D30, 4=D60, 5=D90, 6=D120, 7=D150
     cols_to_keep = 2 + len(active_milestones)  # 1 (name) + 1 (current) + active milestones
     total_cols = len(tbl.columns)
     if cols_to_keep < total_cols:
