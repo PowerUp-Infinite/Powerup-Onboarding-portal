@@ -99,6 +99,30 @@ def parse_uploaded_excel(xlsx_path: str) -> dict[str, pd.DataFrame]:
             if pd.api.types.is_datetime64_any_dtype(df[col]):
                 df[col] = df[col].dt.strftime('%Y-%m-%d').fillna('')
         out[key] = df
+
+    # ── XIRR aliasing (ACTIVE → plain), backward-compatible ───────────
+    # New Excel format splits XIRR into _LIFETIME and _ACTIVE columns.
+    # Engine code reads the unsuffixed names (PF_XIRR, BM_XIRR, DIR_XIRR,
+    # XIRR_VALUE). When only _ACTIVE is present (new format), copy it
+    # into the unsuffixed column so the engine uses ACTIVE/current XIRR.
+    pf = out.get('pf_level')
+    if pf is not None and not pf.empty:
+        for plain, active in [('PF_XIRR',  'PF_XIRR_ACTIVE'),
+                              ('BM_XIRR',  'BM_XIRR_ACTIVE'),
+                              ('DIR_XIRR', 'DIR_XIRR_ACTIVE')]:
+            if plain not in pf.columns and active in pf.columns:
+                pf[plain] = pf[active]
+        out['pf_level'] = pf
+
+    sch = out.get('scheme')
+    if sch is not None and not sch.empty:
+        for plain, active in [('XIRR_VALUE', 'XIRR_VALUE_ACTIVE'),
+                              ('BM_XIRR',    'BM_XIRR_ACTIVE'),
+                              ('DIR_XIRR',   'DIR_XIRR_ACTIVE')]:
+            if plain not in sch.columns and active in sch.columns:
+                sch[plain] = sch[active]
+        out['scheme'] = sch
+
     return out
 
 

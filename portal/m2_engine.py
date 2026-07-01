@@ -2106,13 +2106,24 @@ RISK_TYPE_PREFIX = {
 
 
 def _best_infinite_type(pf_id, prefix, results_df):
-    """Pick variant-1 lumpsum type for the given risk prefix."""
+    """Pick variant-2 type for the given risk prefix.
+
+    Variant 2 is the canonical 'recommended' Infinite portfolio used in
+    the line chart (per product team decision). Falls back to variant 1
+    if variant 2 missing, then to any variant with that prefix.
+    """
     cust = results_df[results_df['PF_ID'] == pf_id]
-    # Always prefer variant 1 lumpsum (e.g. "VA1 - lumpsum - 24M")
-    v1_lump = f'{prefix}1 - lumpsum - 24M'
-    if not cust[cust['TYPE'] == v1_lump].empty:
-        return v1_lump
-    # Fall back: any variant-1 type
+    # Prefer variant 2 (e.g. "VA2 - 24M" or "VA2 - lumpsum - 24M")
+    for candidate in (f'{prefix}2 - 24M', f'{prefix}2 - lumpsum - 24M'):
+        if not cust[cust['TYPE'] == candidate].empty:
+            return candidate
+    v2 = cust[cust['TYPE'].str.startswith(f'{prefix}2')]
+    if not v2.empty:
+        return v2.iloc[0]['TYPE']
+    # Fall back: variant 1
+    for candidate in (f'{prefix}1 - 24M', f'{prefix}1 - lumpsum - 24M'):
+        if not cust[cust['TYPE'] == candidate].empty:
+            return candidate
     v1 = cust[cust['TYPE'].str.startswith(f'{prefix}1')]
     if not v1.empty:
         return v1.iloc[0]['TYPE']
@@ -2766,27 +2777,22 @@ def populate_questionnaire_slide(slide, q_row):
 
 # Risk Reward deck is fetched from Drive lazily via _get_rr_deck_path()
 
-# Risk profile → 0-based start index in the risk-reward deck.
-# The new 36-slide deck (file ID 1I-2BXzKpXQC3LG-xo4uZuOLMjpaj7tLCNjqIRcXgZE8)
-# packs TWO variants per profile (with-Global + without-Global), 4 slides each.
-# We always use the WITH-GLOBAL variant — verified by inspection that the
-# first 4 slides of every 8-slide block carry 'Global' in their portfolio
-# legend. Very Conservative has a single 4-slide block (no separate variants).
-#   1-4   = Very Aggressive (Global variant)  -> idx 0
-#   5-8   = Very Aggressive (no-Global)       -> skipped
-#   9-12  = Aggressive (Global)               -> idx 8
-#   13-16 = Aggressive (no-Global)            -> skipped
-#   17-20 = Balanced (Global)                 -> idx 16
-#   21-24 = Balanced (no-Global)              -> skipped
-#   25-28 = Conservative (Global)             -> idx 24
-#   29-32 = Conservative (no-Global)          -> skipped
-#   33-36 = Very Conservative (only variant)  -> idx 32
-RISK_REWARD_IDX = {
-    'Very Aggressive':   0,
-    'Aggressive':        8,
-    'Balanced':         16,
-    'Conservative':     24,
-    'Very Conservative': 32,
+# Risk profile → (0-based start index, number of variants) in the
+# new risk-reward deck (file ID 1U43bKI9GNq1UuaxrmHbkCvtrvPTZSYRU0tDmRC1-XVc).
+# Each variant = 2 slides (overview + performance). VA/A/B/C have 3 variants
+# (L/M/S), VC has 2.
+#   slides  0-5  = Very Aggressive: variants 1/2/3
+#   slides  6-11 = Aggressive:      variants 1/2/3
+#   slides 12-17 = Balanced:        variants 1/2/3
+#   slides 18-23 = Conservative:    variants 1/2/3
+#   slides 24-27 = Very Conservative: variants 1/2
+# Insertion order per spec: variant 2 → variant 1 → variant 3.
+RISK_REWARD_LAYOUT = {
+    'Very Aggressive':   (0,  3),
+    'Aggressive':        (6,  3),
+    'Balanced':         (12,  3),
+    'Conservative':     (18,  3),
+    'Very Conservative':(24,  2),
 }
 
 
@@ -2952,6 +2958,25 @@ def _fill_rr_goals(slide, goals):
             print(f"  Risk Reward: hardcoded goals -> '{primary}' / '{secondary}'")
 
         elif txt.strip() == 'Wealth Growth':
+            # The new RR deck template puts 'Wealth Growth' (goal text placeholder)
+            # ABOVE the 'Goal Coverage' label, with only ~0.11in gap. The
+            # visual reading order users expect is:
+            #   Description → 'Goal Coverage' label → goal text
+            # Fix by moving the GOAL TEXT shape DOWN to sit below the label,
+            # leaving 'Goal Coverage' in its original template position. This
+            # avoids any conflict with the description text above.
+            try:
+                for s2 in _iter_shapes_recursive(slide.shapes):
+                    if (s2.has_text_frame
+                        and s2.text_frame.text.strip() == 'Goal Coverage'
+                        and s2.top is not None):
+                        # Goal text goes to just below the label bottom
+                        # (label ~0.15in tall, plus small gap)
+                        shape.top = s2.top + 182880   # 0.20in below Goal Coverage top
+                        break
+            except Exception:
+                pass
+
             # Hardcoded goal text on S1 variant slides — replace with all customer goals
             # Replicate the L1 structure: primary run, <a:br/>, secondary run
             para = shape.text_frame.paragraphs[0]
@@ -2992,12 +3017,18 @@ def _fill_rr_goals(slide, goals):
 
 def do_risk_reward_slides(prs, risk_profile, goals=None):
     """
-    Replace slides 15-18 (indices 14-17) in prs in-place with the 4 slides
-    from the risk-reward deck that correspond to risk_profile.
-    Uses in-place content replacement to avoid XML part-name collisions.
-    Returns the allocation dict extracted from the FIRST overview slide
-    (e.g. {'High Risk':50,'Medium Risk':20,'Low Risk':10,'Hybrid':10,'Global':10})
-    so the caller can drive the Core Goals slide off the same numbers.
+    Replace the 4 placeholder RR slides (indices 14-17) with ALL variants
+    of the risk-reward deck for this profile, in the order:
+        variant 2 → variant 1 → variant 3  (VC has only 1 → 2, no 3)
+    Each variant is 2 slides (overview + performance), so 3-variant
+    profiles produce 6 inserted slides; VC produces 4.
+
+    Strategy: delete the 4 placeholder slides, then clone the new variant
+    slides in via _cross_deck_clone (preserves the new RR deck's design,
+    avoids the content-replacement gymnastics needed by the old layout).
+
+    Returns variant 2's allocation dict so the Goal Portfolio slide
+    matches the line chart's variant.
     """
     rr_alloc = {}
     try:
@@ -3005,36 +3036,78 @@ def do_risk_reward_slides(prs, risk_profile, goals=None):
     except Exception as e:
         print(f"  Risk Reward: Drive fetch failed - skipping ({e})"); return rr_alloc
     rr_prs = Presentation(_rr_path)
-    start  = RISK_REWARD_IDX.get(risk_profile, 16)   # default = Balanced (new 36-slide layout)
+    start, n_variants = RISK_REWARD_LAYOUT.get(risk_profile, (12, 3))   # default Balanced
 
+    # ── 1. Identify + delete the 4 placeholder RR slides (indices 14-17) ──
+    sldIdLst = prs.slides._sldIdLst
+    PLACEHOLDER_IDX = [14, 15, 16, 17]
+    try:
+        rr_slide_ids = [prs.slides[i].slide_id for i in PLACEHOLDER_IDX
+                        if i < len(prs.slides)]
+        first_pos = next(p for p, el in enumerate(sldIdLst)
+                         if int(el.attrib.get('id', '0')) == rr_slide_ids[0])
+        for sid in rr_slide_ids:
+            elem = next((el for el in sldIdLst
+                         if int(el.attrib.get('id', '0')) == sid), None)
+            if elem is None:
+                continue
+            rId = elem.attrib['{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id']
+            sldIdLst.remove(elem)
+            try: prs.part.drop_rel(rId)
+            except Exception: pass
+        print(f"  Risk Reward: deleted {len(rr_slide_ids)} placeholder slides "
+              f"at indices {PLACEHOLDER_IDX}")
+    except Exception as e:
+        print(f"  Risk Reward: WARNING couldn't delete placeholders ({e})")
+        return rr_alloc
+
+    # ── 2. Build source-slide order: variant 2 → variant 1 → variant 3 ───
+    # Each variant occupies 2 consecutive slides in the source deck
+    # starting at (start + 2*v).
+    def _variant_slides(v):
+        """0-indexed variant (0=v1, 1=v2, 2=v3). Returns (overview, perf) indices."""
+        return (start + 2*v, start + 2*v + 1)
+
+    if n_variants >= 3:
+        order = [1, 0, 2]   # v2 → v1 → v3
+    else:
+        order = [1, 0]      # v2 → v1 (no v3)
+    src_pairs = [_variant_slides(v) for v in order]
+    flat_src = [idx for pair in src_pairs for idx in pair]
+    print(f"  Risk Reward: source slide indices (in order) = {flat_src}")
+
+    # ── 3. Clone each source slide and insert at the right position ───────
     count = 0
-    for offset in range(4):
-        dst_idx = 14 + offset
-        src_idx = start + offset
-        if dst_idx >= len(prs.slides) or src_idx >= len(rr_prs.slides):
-            break
+    for offset, src_idx in enumerate(flat_src):
+        if src_idx >= len(rr_prs.slides):
+            print(f"  Risk Reward: source slide {src_idx} out of range, skipping")
+            continue
         try:
-            _replace_slide_content(
-                prs.slides[dst_idx], rr_prs.slides[src_idx], prs
-            )
+            new_slide = _cross_deck_clone(rr_prs.slides[src_idx], prs)
+            # _cross_deck_clone appends at the end; move it to first_pos+offset
+            new_elem = list(sldIdLst)[-1]
+            sldIdLst.remove(new_elem)
+            sldIdLst.insert(first_pos + offset, new_elem)
             if goals:
-                _fill_rr_goals(prs.slides[dst_idx], goals)
+                try:
+                    _fill_rr_goals(new_slide, goals)
+                except Exception:
+                    pass
             count += 1
         except Exception as e:
-            print(f"  Risk Reward: WARNING slide {src_idx+1}: {e}")
+            print(f"  Risk Reward: WARNING failed to clone source slide {src_idx}: {e}")
 
-    # Extract allocation from the first overview slide (offset 0 — the
-    # 'L' variant). Used by do_goal_portfolio_slide to size its bar.
-    if count >= 1:
-        try:
-            rr_alloc = _extract_rr_allocation(rr_prs.slides[start])
-            if rr_alloc:
-                print(f"  Risk Reward: extracted allocation -> {rr_alloc}")
-        except Exception as e:
-            print(f"  Risk Reward: WARNING couldn't extract allocation ({e})")
+    # ── 4. Extract variant 2 allocation (its overview slide) ──────────────
+    try:
+        v2_overview_idx = start + 2   # variant 2 overview
+        rr_alloc = _extract_rr_allocation(rr_prs.slides[v2_overview_idx])
+        if rr_alloc:
+            print(f"  Risk Reward: variant-2 allocation -> {rr_alloc}")
+    except Exception as e:
+        print(f"  Risk Reward: WARNING couldn't extract variant-2 allocation ({e})")
 
-    print(f"  Risk Reward: replaced {count} slides for '{risk_profile}' "
-          f"(source idx {start}-{start+count-1})")
+    print(f"  Risk Reward: inserted {count} variant slides for '{risk_profile}' "
+          f"(order: v2, v1{', v3' if n_variants >= 3 else ''})")
     return rr_alloc
 
 
@@ -3042,7 +3115,8 @@ def do_risk_reward_slides(prs, risk_profile, goals=None):
 # CORE GOALS / Goal Portfolio slide — inserted after slide 13
 # ──────────────────────────────────────────────────────────────
 
-_GOAL_CATEGORIES = ['High Risk', 'Medium Risk', 'Low Risk', 'Hybrid', 'Global']
+_GOAL_CATEGORIES = ['High Risk', 'Medium Risk', 'Low Risk', 'Hybrid', 'Global', 'Gold']
+GOLD_LEGEND_HEX = 'F4C95D'   # gold legend swatch colour (matches RR donut palette)
 
 def _extract_rr_allocation(rr_slide):
     """Walk a Risk Reward overview slide and return its legend %s as a dict
@@ -3134,10 +3208,12 @@ def _populate_goal_slide(slide, rr_alloc):
     BAR_TOTAL = 3.84 * EMU
     ROW_TOL   = 60000   # ~0.07in — generous tolerance for sibling-row picking
 
+    # Allocation in the order: High / Med / Low / Hybrid / Global / Gold
     cats = _GOAL_CATEGORIES
     pcts = [int(rr_alloc.get(c, 0)) for c in cats]
-    total = sum(pcts) or 100   # avoid div-zero; bar is scaled to actual total
+    total = sum(pcts) or 100
     widths = [int(BAR_TOTAL * p / total) for p in pcts]
+    has_gold = pcts[5] > 0   # whether to clone a 6th segment for Gold
 
     # ── Bar segments + pct labels (both rows share top=3.64) ──────────────
     # Cap left at 4.7in so we don't sweep right-panel shapes (which start at
@@ -3151,7 +3227,6 @@ def _populate_goal_slide(slide, rr_alloc):
         if s.left is not None and s.left >= LEFT_PANEL_RIGHT:
             continue
         if not s.has_text_frame:
-            # No text frame at all — colour-fill rect
             bar_blank.append(s); continue
         t = s.text_frame.text.strip()
         if t == '':
@@ -3161,18 +3236,52 @@ def _populate_goal_slide(slide, rr_alloc):
     bar_blank.sort(key=lambda s: s.left)
     bar_pcts.sort(key=lambda s: s.left)
 
-    # Resize and reflow the 5 bar segments
+    # If Gold is present and we only have 5 template segments, clone the last
+    # bar (Global) and its label to create a 6th Gold segment.
+    if has_gold and len(bar_blank) == 5 and len(bar_pcts) == 5:
+        last_bar = bar_blank[-1]
+        last_lbl = bar_pcts[-1]
+        spTree = last_bar._element.getparent()
+        gold_bar_xml = deepcopy(last_bar._element)
+        gold_lbl_xml = deepcopy(last_lbl._element)
+        spTree.append(gold_bar_xml)
+        spTree.append(gold_lbl_xml)
+        # Re-find them as Shape objects
+        bar_blank_new = []
+        bar_pcts_new = []
+        for s in slide.shapes:
+            if abs(s.top - BAR_TOP) > ROW_TOL: continue
+            if s.left is not None and s.left >= LEFT_PANEL_RIGHT: continue
+            if not s.has_text_frame:
+                bar_blank_new.append(s); continue
+            t = s.text_frame.text.strip()
+            if t == '':
+                bar_blank_new.append(s)
+            elif t.endswith('%'):
+                bar_pcts_new.append(s)
+        bar_blank = sorted(bar_blank_new, key=lambda s: s.left)
+        bar_pcts  = sorted(bar_pcts_new,  key=lambda s: s.left)
+        # Recolour the new Gold segment to the canonical gold hex
+        try:
+            from pptx.dml.color import RGBColor
+            bar_blank[-1].fill.solid()
+            bar_blank[-1].fill.fore_color.rgb = RGBColor.from_string(GOLD_LEGEND_HEX)
+        except Exception:
+            pass
+
+    n_segments = 6 if has_gold else 5
+
+    # Resize and reflow N bar segments
     x = int(BAR_LEFT)
-    for i in range(min(5, len(bar_blank))):
+    for i in range(min(n_segments, len(bar_blank))):
         bar = bar_blank[i]
         bar.left = x
         bar.width = widths[i] if i < len(widths) else 0
         bar.top = int(BAR_TOP)
         bar.height = int(BAR_H)
         x += widths[i] if i < len(widths) else 0
-    # Reflow + relabel pct overlays
     x = int(BAR_LEFT)
-    for i in range(min(5, len(bar_pcts))):
+    for i in range(min(n_segments, len(bar_pcts))):
         lbl = bar_pcts[i]
         lbl.left = x
         lbl.width = widths[i] if i < len(widths) else 0
@@ -3181,15 +3290,26 @@ def _populate_goal_slide(slide, rr_alloc):
         _set_first_run_text(lbl, f'{pcts[i]}%')
         x += widths[i] if i < len(widths) else 0
 
-    # ── Top labels (row at top=4.09in) — 'Equity X%' / 'Hybrid Y%' / 'Global Z%' ──
+    # ── Top labels (row at top=4.09in) — 'Equity X%' / 'Hybrid Y%' / 'Global Z%' / 'Gold W%' ──
     eq_pct = pcts[0] + pcts[1] + pcts[2]
     top_label_y = 4.09 * EMU
     top_labels = [s for s in slide.shapes
                   if s.has_text_frame and abs(s.top - top_label_y) < ROW_TOL
                   and s.text_frame.text.strip()]
     top_labels.sort(key=lambda s: s.left)
-    # First top-label is Equity (spans the equity sub-bars), second is Hybrid,
-    # third (if present) is Global
+    def _shrink_font(shape, sz_hundredths):
+        """Set every run's font size on `shape` to sz_hundredths (e.g.
+        700 = 7pt). Narrow labels need tiny fonts to fit their text in a
+        sub-half-inch bar segment."""
+        try:
+            for para in shape.text_frame.paragraphs:
+                for run in para.runs:
+                    run.font.size = Pt(sz_hundredths / 100)
+        except Exception:
+            pass
+
+    NARROW_FONT_PT = 7   # narrow labels (Hybrid/Global/Gold at 10% bar width)
+
     if len(top_labels) >= 1:
         l = top_labels[0]
         l.left = int(BAR_LEFT)
@@ -3199,12 +3319,28 @@ def _populate_goal_slide(slide, rr_alloc):
         l = top_labels[1]
         l.left = int(BAR_LEFT) + sum(widths[:3])
         l.width = widths[3]
-        _set_first_run_text(l, f'Hybrid {pcts[3]}%')
+        _set_first_run_text(l, '' if pcts[3] == 0 else f'Hybrid {pcts[3]}%')
+        if pcts[3] > 0:
+            _shrink_font(l, NARROW_FONT_PT * 100)
     if len(top_labels) >= 3:
         l = top_labels[2]
         l.left = int(BAR_LEFT) + sum(widths[:4])
         l.width = widths[4]
-        _set_first_run_text(l, f'Global {pcts[4]}%')
+        _set_first_run_text(l, '' if pcts[4] == 0 else f'Global {pcts[4]}%')
+        if pcts[4] > 0:
+            _shrink_font(l, NARROW_FONT_PT * 100)
+    # Gold top label: clone the Global label and position over the Gold bar.
+    if has_gold and len(top_labels) >= 3:
+        spTree = top_labels[2]._element.getparent()
+        gold_top_xml = deepcopy(top_labels[2]._element)
+        spTree.append(gold_top_xml)
+        for s in slide.shapes:
+            if s._element is gold_top_xml:
+                s.left = int(BAR_LEFT) + sum(widths[:5])
+                s.width = widths[5]
+                _set_first_run_text(s, f'Gold {pcts[5]}%')
+                _shrink_font(s, NARROW_FONT_PT * 100)
+                break
 
     # ── Legend pct cells (top ~4.33/4.50/4.66/4.83/4.99, all at left ~3.60) ──
     legend_y_per_cat = {
@@ -3215,6 +3351,8 @@ def _populate_goal_slide(slide, rr_alloc):
         'Global':      4.99 * EMU,
     }
     for cat in cats:
+        if cat == 'Gold':
+            continue   # handled separately below
         y = legend_y_per_cat[cat]
         for s in slide.shapes:
             if not s.has_text_frame: continue
@@ -3223,6 +3361,51 @@ def _populate_goal_slide(slide, rr_alloc):
             if not t.endswith('%'): continue
             _set_first_run_text(s, f'{int(rr_alloc.get(cat, 0))}%')
             break
+
+    # ── Gold legend row (clone Global row, bump below, recolor swatch) ──
+    if has_gold:
+        try:
+            # Find the Global row triplet: name + pct + swatch (small square)
+            y_global = legend_y_per_cat['Global']
+            ROW_DELTA = int(0.165 * EMU)   # ~one legend row down
+            global_name = global_pct = global_swatch = None
+            for s in slide.shapes:
+                if not s.has_text_frame: continue
+                if abs(s.top - y_global) > ROW_TOL: continue
+                t = s.text_frame.text.strip()
+                if t == 'Global':
+                    global_name = s
+                elif t.endswith('%') and global_pct is None:
+                    global_pct = s
+            # Swatch is a small filled rect roughly aligned with Global row
+            for s in slide.shapes:
+                if s.has_text_frame and s.text_frame.text.strip(): continue
+                if abs((s.top or 0) - y_global) > int(0.10 * EMU): continue
+                if s.width and s.width < int(0.20 * EMU):
+                    global_swatch = s; break
+            for src, new_text, set_gold in (
+                (global_swatch, None,   True),
+                (global_name,   'Gold', False),
+                (global_pct,    f'{pcts[5]}%', False),
+            ):
+                if src is None: continue
+                clone_xml = deepcopy(src._element)
+                src._element.getparent().append(clone_xml)
+                for s in slide.shapes:
+                    if s._element is clone_xml:
+                        s.top = (src.top or 0) + ROW_DELTA
+                        if new_text is not None:
+                            _set_first_run_text(s, new_text)
+                        if set_gold:
+                            try:
+                                from pptx.dml.color import RGBColor
+                                s.fill.solid()
+                                s.fill.fore_color.rgb = RGBColor.from_string(GOLD_LEGEND_HEX)
+                            except Exception:
+                                pass
+                        break
+        except Exception as e:
+            print(f"  Goal Portfolio: WARN couldn't add Gold legend row ({e})")
 
     # Recolor every right-panel shape currently filled with the template's
     # Debt cream (#E8E0CE) to the canonical 'Debt Like' mint used elsewhere
@@ -3812,15 +3995,16 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
     print("[8b/9] Hyperlinks")
     do_hyperlinks(prs, n_appendix)
 
-    print("[9/9] Risk Reward Slides (15-18)")
+    print("[9/9] Risk Reward Slides (3 variants for VA/A/B/C, 2 for VC)")
     rr_goals = parse_goals(q_row.get("Goals", "")) if not q_row.empty else []
     rr_alloc = do_risk_reward_slides(prs, risk_profile, goals=rr_goals)
 
-    print("[9b/9] Goal Portfolio Slide (inserted after RR slides, position 19)")
-    # RR slides sit at 0-indexed positions 14-17 (= 1-indexed 15-18).
-    # Place the goal slide right after the last RR slide so the flow reads
-    # divider -> 4 RR slides -> goal portfolio.
-    do_goal_portfolio_slide(prs, rr_alloc, risk_profile, insert_after_idx=17)
+    # Compute insert position for goal portfolio: 14 + (n_variants * 2) - 1
+    # so it lands right after the last RR variant slide.
+    _start, _n_variants = RISK_REWARD_LAYOUT.get(risk_profile, (12, 3))
+    last_rr_idx = 14 + (_n_variants * 2) - 1
+    print(f"[9b/9] Goal Portfolio Slide (inserted after RR slides, last RR at idx {last_rr_idx})")
+    do_goal_portfolio_slide(prs, rr_alloc, risk_profile, insert_after_idx=last_rr_idx)
 
     print("[10/9] Questionnaire Slides")
     goals = parse_goals(q_row.get("Goals", "")) if not q_row.empty else []
