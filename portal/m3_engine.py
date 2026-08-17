@@ -490,9 +490,14 @@ _RG_NORMALIZE = {
     'Gold&Silver':      'Gold & Silver',
     'Debt like':        'Debt Like',
     'Debt-Like':        'Debt Like',
+    'DEBT':             'Debt Like',
+    'DEBT_LIKE':        'Debt Like',
     '1) High Risk':     '1) Aggressive',
     '2) Medium Risk':   '2) Balanced',
     '3) Low Risk':      '3) Conservative',
+    'HIGH_RISK':        '1) Aggressive',
+    'MEDIUM_RISK':      '2) Balanced',
+    'LOW_RISK':         '3) Conservative',
 }
 
 def _normalize_rg(rg):
@@ -2395,7 +2400,7 @@ def populate_corpus_scheme_slides(prs, section4, ref_data, rr_category):
 # Sell / Retain / Buy slides
 # ---------------------------------------------------------------------------
 
-MAX_ROWS_PER_SLIDE = 15
+MAX_ROWS_PER_SLIDE = 11
 
 
 
