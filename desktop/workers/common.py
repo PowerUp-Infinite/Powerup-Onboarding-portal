@@ -100,28 +100,34 @@ def parse_uploaded_excel(xlsx_path: str) -> dict[str, pd.DataFrame]:
                 df[col] = df[col].dt.strftime('%Y-%m-%d').fillna('')
         out[key] = df
 
-    # ── XIRR aliasing (ACTIVE → plain), backward-compatible ───────────
+    # ── XIRR aliasing — BIDIRECTIONAL, backward-compatible ───────────
     # New Excel format splits XIRR into _LIFETIME and _ACTIVE columns.
     # Engine code reads the unsuffixed names (PF_XIRR, BM_XIRR, DIR_XIRR,
-    # XIRR_VALUE). When only _ACTIVE is present (new format), copy it
-    # into the unsuffixed column so the engine uses ACTIVE/current XIRR.
-    pf = out.get('pf_level')
-    if pf is not None and not pf.empty:
-        for plain, active in [('PF_XIRR',  'PF_XIRR_ACTIVE'),
-                              ('BM_XIRR',  'BM_XIRR_ACTIVE'),
-                              ('DIR_XIRR', 'DIR_XIRR_ACTIVE')]:
-            if plain not in pf.columns and active in pf.columns:
-                pf[plain] = pf[active]
-        out['pf_level'] = pf
+    # XIRR_VALUE). The M1 Apps Script reads _ACTIVE FIRST then plain.
+    # So we populate BOTH so every downstream reader finds a value:
+    #   - If only _ACTIVE exists (new format) → copy to plain
+    #   - If only plain exists (old format)   → copy to _ACTIVE
+    def _bi_alias(df, pairs):
+        if df is None or df.empty: return df
+        for plain, active in pairs:
+            has_plain  = plain  in df.columns
+            has_active = active in df.columns
+            if has_active and not has_plain:
+                df[plain] = df[active]
+            elif has_plain and not has_active:
+                df[active] = df[plain]
+        return df
 
-    sch = out.get('scheme')
-    if sch is not None and not sch.empty:
-        for plain, active in [('XIRR_VALUE', 'XIRR_VALUE_ACTIVE'),
-                              ('BM_XIRR',    'BM_XIRR_ACTIVE'),
-                              ('DIR_XIRR',   'DIR_XIRR_ACTIVE')]:
-            if plain not in sch.columns and active in sch.columns:
-                sch[plain] = sch[active]
-        out['scheme'] = sch
+    out['pf_level'] = _bi_alias(out.get('pf_level'), [
+        ('PF_XIRR',  'PF_XIRR_ACTIVE'),
+        ('BM_XIRR',  'BM_XIRR_ACTIVE'),
+        ('DIR_XIRR', 'DIR_XIRR_ACTIVE'),
+    ])
+    out['scheme'] = _bi_alias(out.get('scheme'), [
+        ('XIRR_VALUE', 'XIRR_VALUE_ACTIVE'),
+        ('BM_XIRR',    'BM_XIRR_ACTIVE'),
+        ('DIR_XIRR',   'DIR_XIRR_ACTIVE'),
+    ])
 
     return out
 

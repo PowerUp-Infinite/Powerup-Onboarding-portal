@@ -62,6 +62,26 @@ def _sync_excel_to_sheets(xlsx_path: str, only_pf_id: str) -> list[str]:
                 df = df[df['PF_ID'].astype(str) == str(only_pf_id)].copy()
                 if df.empty:
                     continue
+            # XIRR aliasing — bidirectional (old-format files have only
+            # plain columns; new-format files have only _ACTIVE columns).
+            # The M1 sheet lives with a fixed schema that includes BOTH,
+            # so we populate whichever is missing to keep every row
+            # complete and prevent stale "empty _ACTIVE cell" bugs.
+            _XIRR_ALIASES = {
+                'pf_level':     [('PF_XIRR',    'PF_XIRR_ACTIVE'),
+                                 ('BM_XIRR',    'BM_XIRR_ACTIVE'),
+                                 ('DIR_XIRR',   'DIR_XIRR_ACTIVE')],
+                'scheme_level': [('XIRR_VALUE', 'XIRR_VALUE_ACTIVE'),
+                                 ('BM_XIRR',    'BM_XIRR_ACTIVE'),
+                                 ('DIR_XIRR',   'DIR_XIRR_ACTIVE')],
+            }
+            for plain, active in _XIRR_ALIASES.get(canonical, []):
+                has_plain  = plain  in df.columns
+                has_active = active in df.columns
+                if has_active and not has_plain:
+                    df[plain] = df[active]
+                elif has_plain and not has_active:
+                    df[active] = df[plain]
             for col in df.columns:
                 if pd.api.types.is_datetime64_any_dtype(df[col]):
                     df[col] = df[col].dt.strftime('%Y-%m-%d').fillna('')
