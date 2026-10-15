@@ -60,6 +60,33 @@ def _execute_with_retry(request, max_attempts: int = 5, base_delay: float = 1.0)
                 raise
             delay = base_delay * (2 ** attempt)
             time.sleep(delay)
+
+
+def create_drive_file_with_retry(file_metadata: dict, buf: BytesIO, mimetype: str,
+                                 fields: str = "id, name, webViewLink",
+                                 max_attempts: int = 4, base_delay: float = 3.0) -> dict:
+    """files().create with a media upload, retried on Drive's transient
+    429/5xx errors. A failed resumable upload can't be re-sent, so every
+    attempt rewinds the buffer and builds a fresh request."""
+    drive = get_drive_service()
+    for attempt in range(max_attempts):
+        buf.seek(0)
+        media = MediaIoBaseUpload(buf, mimetype=mimetype, resumable=True)
+        try:
+            return drive.files().create(
+                body=file_metadata, media_body=media,
+                fields=fields, supportsAllDrives=True,
+            ).execute()
+        except HttpError as e:
+            try:
+                status = int(getattr(e.resp, 'status', 0) or 0)
+            except (TypeError, ValueError):
+                status = 0
+            if status not in (429, 500, 502, 503, 504) or attempt == max_attempts - 1:
+                raise
+            time.sleep(base_delay * (2 ** attempt))
+
+
 from config import (
     MAIN_SPREADSHEET_ID, M3_SPREADSHEET_ID,
     QUESTIONNAIRE_SPREADSHEET_ID, TIMESERIES_SPREADSHEET_ID,
@@ -831,8 +858,6 @@ def upload_pptx_to_drive(
     Returns:
         {"id": file_id, "url": web_view_link, "name": filename}
     """
-    drive = get_drive_service()
-
     mime_pptx = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     mime_slides = "application/vnd.google-apps.presentation"
 
@@ -843,14 +868,7 @@ def upload_pptx_to_drive(
     if convert_to_slides:
         file_metadata["mimeType"] = mime_slides
 
-    media = MediaIoBaseUpload(buf, mimetype=mime_pptx, resumable=True)
-
-    created = drive.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields="id, name, webViewLink",
-        supportsAllDrives=True,
-    ).execute()
+    created = create_drive_file_with_retry(file_metadata, buf, mime_pptx)
 
     return {
         "id": created["id"],
@@ -871,8 +889,6 @@ def upload_docx_to_drive(
     Returns:
         {"id": file_id, "url": web_view_link, "name": filename}
     """
-    drive = get_drive_service()
-
     mime_docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
     file_metadata = {
@@ -882,14 +898,7 @@ def upload_docx_to_drive(
     if convert_to_gdoc:
         file_metadata["mimeType"] = "application/vnd.google-apps.document"
 
-    media = MediaIoBaseUpload(buf, mimetype=mime_docx, resumable=True)
-
-    created = drive.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields="id, name, webViewLink",
-        supportsAllDrives=True,
-    ).execute()
+    created = create_drive_file_with_retry(file_metadata, buf, mime_docx)
 
     return {
         "id": created["id"],

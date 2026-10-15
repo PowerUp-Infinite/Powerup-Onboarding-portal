@@ -94,6 +94,9 @@ cp -f ../portal/config.py           "$APP/portal/"
 cp -f resources/credentials.json "$RES/"
 cp -f ../portal/.env             "$RES/.env"
 
+# Build stamp shown in the window title so users can tell which version they run
+date '+%d %b %Y %H:%M' > "$APP/BUILD.txt"
+
 # Strip __pycache__ dirs that snuck in via cp -r
 find "$APP" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 

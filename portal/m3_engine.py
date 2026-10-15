@@ -18,6 +18,7 @@ from io import BytesIO
 import openpyxl
 import pandas as pd
 from pptx import Presentation
+from pptx.dml.color import RGBColor
 from pptx.oxml.ns import qn
 
 import sheets
@@ -433,16 +434,32 @@ def _read_pf_selection(wb):
     return out
 
 
+def _read_buyplan_variant(wb):
+    """Return the Infinite variant code the plan was built on (e.g. 'VA1'),
+    read from the 'Variant: VA1' cell at the top of PF_BuyPlan_*. None if absent."""
+    for name in wb.sheetnames:
+        if not name.startswith('PF_BuyPlan'):
+            continue
+        for row in wb[name].iter_rows(min_row=1, max_row=3, values_only=True):
+            for v in row:
+                m = re.search(r'variant\s*:\s*([A-Za-z]+\d*)', str(v or ''), re.I)
+                if m:
+                    return m.group(1).upper()
+    return None
+
+
 def read_excel(excel_path):
     wb = openpyxl.load_workbook(excel_path, data_only=True)
 
     pf_selection = _read_pf_selection(wb)
+    variant = _read_buyplan_variant(wb)
 
     # New format: PF_MasterPlan_* sheet takes priority
     mp_ws = _get_masterplan_sheet(wb)
     if mp_ws is not None:
         out = _read_masterplan(mp_ws)
         out['pf_selection'] = pf_selection
+        out['variant'] = variant
         return out
 
     # Old format: PF_Curation_* sheet
@@ -471,6 +488,8 @@ def read_excel(excel_path):
     for k, v in result.items():
         non_gt = [r for r in v if not r.get('__grand_total__')]
         print(f"    {k}: {len(non_gt)} data rows")
+    result['pf_selection'] = pf_selection
+    result['variant'] = variant
     return result
 
 # ──────────────────────────────────────────────────────────────
@@ -1136,17 +1155,30 @@ def build_sip_rows(section4):
                              'amount': sub_amount, 'pct': pct_of(sub_amount),
                              'count': uniq_count(schemes), 'level': 2, 'bold': False})
 
-    for rg, subs in groups.items():
-        if rg in EQUITY_RGS:
-            continue
+    # Canonical display order for non-equity risk groups
+    _NONEQ_ORDER = ['Hybrid', 'Gold & Silver', 'Global', 'Debt Like', 'Solution']
+    non_eq_rgs = sorted(
+        [rg for rg in groups if rg not in EQUITY_RGS],
+        key=lambda rg: _NONEQ_ORDER.index(rg) if rg in _NONEQ_ORDER else 99
+    )
+    for rg in non_eq_rgs:
+        subs = groups[rg]
         rg_amount = sum(sip_amt(r) for s in subs.values() for r in s)
         rg_count = uniq_count([r for s in subs.values() for r in s])
-        rows.append({'name': RG_DISPLAY.get(rg, rg),
+        rg_display = RG_DISPLAY.get(rg, rg)
+        rows.append({'name': rg_display,
                      'amount': rg_amount, 'pct': pct_of(rg_amount),
                      'count': rg_count, 'level': 0, 'bold': True})
+        # Skip redundant sub rows whose display matches the parent RG label
+        # (e.g. Gold & Silver → 'Gold' parent AND COMMODITY_GOLD → 'Gold' child
+        # collide into a visual duplicate). When the group has just one sub
+        # that collides, the parent row already carries the numbers.
         for sub, schemes in subs.items():
+            sub_display = _format_subcategory(sub)
+            if sub_display.strip().lower() == rg_display.strip().lower():
+                continue
             sub_amount = sum(sip_amt(r) for r in schemes)
-            rows.append({'name': _format_subcategory(sub),
+            rows.append({'name': sub_display,
                          'amount': sub_amount, 'pct': pct_of(sub_amount),
                          'count': uniq_count(schemes), 'level': 1, 'bold': False})
 
@@ -1445,6 +1477,198 @@ def _trim_repeated_milestones(rows_data):
     return active, last_months
 
 
+def _text_width_pt(text, size_pt, bold=False):
+    """Approximate IBM Plex Sans width (pt): Arial metrics x1.10 (Plex runs wider)."""
+    try:
+        from PIL import ImageFont
+        face = 'arialbd.ttf' if bold else 'arial.ttf'
+        w = ImageFont.truetype(face, 100).getlength(text) * size_pt / 100.0
+    except Exception:
+        w = len(text) * size_pt * (0.58 if bold else 0.55)
+    return w * 1.10
+
+
+def _populate_tranche_bullets(slide, s4_data, active_milestones):
+    """Fill the 'T<n>: Sell X of existing MFs & Invest Y as per allocation'
+    bullets on the transition slide — one per tranche that moves money.
+    The template ships 3 placeholder bullets (text box + oval dot); extras
+    are cloned at the same pitch, unused ones removed."""
+    EMU = 914400
+
+    def amt(v):
+        v = float(v or 0)
+        if v >= 1e7:
+            return f'{v/1e7:.2f}'.rstrip('0').rstrip('.') + 'Cr'
+        if v >= 1e5:
+            return f'{v/1e5:.2f}'.rstrip('0').rstrip('.') + 'L'
+        return f'{v/1e3:.1f}'.rstrip('0').rstrip('.') + 'K'
+
+    lines = []
+    have_cols = False
+    for i, d in enumerate(active_milestones):
+        sold = buy = 0.0
+        for r in s4_data:
+            s_v, b_v = r.get(f'Amount Sold in {d}'), r.get(f'Buy Amount in {d}')
+            if s_v is not None or b_v is not None:
+                have_cols = True
+            sold += s_v if isinstance(s_v, (int, float)) else 0
+            buy += b_v if isinstance(b_v, (int, float)) else 0
+        if sold > 0 and buy > 0:
+            lines.append(f'T{i}: Sell {amt(sold)} of existing MFs & Invest {amt(buy)} as per allocation')
+        elif sold > 0:
+            lines.append(f'T{i}: Sell {amt(sold)} of existing MFs')
+        elif buy > 0:
+            lines.append(f'T{i}: Invest {amt(buy)} as per allocation')
+
+    texts = sorted([sh for sh in slide.shapes if sh.has_text_frame and not sh.has_table
+                    and re.match(r'^[DT]\d+\s*:', sh.text_frame.text.strip())],
+                   key=lambda s: s.top)
+    if not texts:
+        return
+    ovals = []
+    for sh in slide.shapes:
+        try:
+            if sh.shape_type == 1 and sh.auto_shape_type == 9 and sh.width < 0.15 * EMU:
+                ovals.append(sh)
+        except Exception:
+            pass
+    pairs = []
+    for t in texts:
+        dot = min((o for o in ovals if o.left < t.left and abs(o.top - t.top) < 0.6 * EMU),
+                  key=lambda o: abs(o.top - (t.top + t.height / 2)), default=None)
+        pairs.append((t, dot))
+
+    if not have_cols:
+        print("  Tranche bullets: no 'Amount Sold in Dx' columns — placeholders removed")
+        lines = []
+
+    # Totals / tax block that sits under the bullets in the same column
+    bullet_ids = {id(t._element) for t, _ in pairs} | {id(d._element) for _, d in pairs if d is not None}
+    last_bullet_top = max(t.top for t, _ in pairs)
+    lower = [sh for sh in slide.shapes
+             if id(sh._element) not in bullet_ids and not sh.has_table
+             and sh.left >= 6.3 * EMU and last_bullet_top < sh.top < 4.9 * EMU]
+
+    first_top = pairs[0][0].top
+    dot_off = (pairs[0][1].top - first_top) if pairs[0][1] is not None else int(0.25 * EMU)
+    pitch = (pairs[1][0].top - pairs[0][0].top) if len(pairs) > 1 else int(0.42 * EMU)
+    while len(pairs) < len(lines):
+        t0, d0 = pairs[-1]
+        nt = _clone_shape_at(slide, t0._element, t0.top + pitch)
+        nd = _clone_shape_at(slide, d0._element, d0.top + pitch) if d0 is not None else None
+        pairs.append((nt, nd))
+    for t, d in pairs[len(lines):]:
+        t._element.getparent().remove(t._element)
+        if d is not None:
+            d._element.getparent().remove(d._element)
+    pairs = pairs[:len(lines)]
+    for (t, _), line in zip(pairs, lines):
+        _set_para_text(t.text_frame.paragraphs[0], line)
+
+    # Reflow: more than 3 tranches → tighten the pitch if needed and push the
+    # totals/tax block down just enough to clear the last bullet.
+    n = len(pairs)
+    if n and lower:
+        bullet_h, gap, limit = int(0.43 * EMU), int(0.07 * EMU), int(5.05 * EMU)
+        lower_top = min(sh.top for sh in lower)
+        lower_h = max(sh.top + sh.height for sh in lower) - lower_top
+        def end(p):
+            return first_top + (n - 1) * p + bullet_h + gap
+        if n > 1 and lower_top + max(0, end(pitch) - lower_top) + lower_h > limit:
+            pitch = max(int(0.30 * EMU),
+                        int((limit - lower_h - gap - bullet_h - first_top) / (n - 1)))
+        for i, (t, d) in enumerate(pairs):
+            t.top = first_top + i * pitch
+            if d is not None:
+                d.top = t.top + dot_off
+        delta = max(0, end(pitch) - lower_top)
+        for sh in lower:
+            sh.top = sh.top + delta
+    print(f"  Tranche bullets: {n} written")
+
+
+def _even_out_transition_table(slide, tbl_shape):
+    """Fixed-width label column + equal-width value columns, one font size
+    for every value cell, sized so nothing wraps. Alignment, cell padding and
+    the sub-row indent stay as the template has them (left-aligned). The
+    table is kept clear of the tranche-notes column on the right."""
+    from pptx.util import Pt
+    EMU = 914400
+    tbl = tbl_shape.table
+    n_val = len(tbl.columns) - 1
+    if n_val < 1:
+        return
+
+    def pad_pt(cell):   # left + right inner padding of a cell, in points
+        tcPr = cell._tc.tcPr
+        attrs = tcPr.attrib if tcPr is not None else {}
+        return (int(attrs.get('marL', 91440)) + int(attrs.get('marR', 91440))) / EMU * 72
+
+    # Right-hand column (tranche bullets, totals, tax) — everything to the
+    # right of the table above the footer
+    right_col = [sh for sh in slide.shapes
+                 if not sh.has_table and sh.left >= 6.3 * EMU and sh.top < 4.9 * EMU]
+    col_left = min((sh.left for sh in right_col), default=int(7.27 * EMU))
+    label_w = int(1.20 * EMU)
+    last = len(tbl.rows) - 1
+    # Leading spaces are the sub-row indent — they take up width, keep them
+    body = [(c.text_frame.text.rstrip(), ri == last or k == n_val, pad_pt(c))
+            for ri, r in enumerate(tbl.rows) if ri > 0 for k, c in enumerate(r.cells) if k > 0]
+    heads = [(c.text_frame.text.strip(), pad_pt(c))
+             for k, c in enumerate(tbl.rows[0].cells) if k > 0]
+
+    def need_w(size):   # column width (EMU) the widest value needs at `size`
+        w = max((_text_width_pt(t, size, b) + pad for t, b, pad in body if t.strip()), default=0)
+        return int(w / 72 * EMU) + 1
+
+    def room(shift):    # width available per value column if right column moves by `shift`
+        return (col_left + shift - int(0.10 * EMU) - tbl_shape.left - label_w) / n_val
+
+    max_shift = int(0.45 * EMU)
+    base_room = col_left - int(0.10 * EMU) - tbl_shape.left - label_w
+
+    def extra_for(size):
+        return max(0, need_w(size) * n_val - base_room)
+
+    size, shift = None, 0
+    for cand in (8.5, 8.0, 7.5):
+        if extra_for(cand) <= max_shift:
+            size, shift = cand, int(extra_for(cand))
+            break
+    if size is None:
+        size, shift = 7.0, int(min(extra_for(7.0), max_shift))
+    if shift:
+        for sh in right_col:
+            sh.left = sh.left + shift
+            over = sh.left + sh.width - int(9.85 * EMU)
+            if over > 0:
+                sh.width = sh.width - over
+
+    val_w = int(min(1.05 * EMU, room(shift)))
+    grid = tbl._tbl.findall(qn('a:tblGrid') + '/' + qn('a:gridCol'))
+    for k, gc in enumerate(grid):
+        gc.set('w', str(label_w if k == 0 else val_w))
+    tbl_shape.width = label_w + n_val * val_w
+
+    col_pt = val_w / EMU * 72
+    head_size = 9.5
+    for cand in (9.5, 9.0, 8.5, 8.0, 7.5):
+        head_size = cand
+        if all(_text_width_pt(h, cand, True) + pad <= col_pt for h, pad in heads if h):
+            break
+
+    for ri, row in enumerate(tbl.rows):
+        for k, cell in enumerate(row.cells):
+            if k == 0:
+                continue
+            for p in cell.text_frame.paragraphs:
+                for r in p.runs:
+                    r.font.size = Pt(head_size if ri == 0 else size)
+    print(f"  Transition table: label {label_w/EMU:.2f}in + {n_val} x {val_w/EMU:.2f}in cols, "
+          f"values {size}pt / headers {head_size}pt, left-aligned as template"
+          + (f", right column shifted {shift/EMU:.2f}in" if shift else ''))
+
+
 def populate_slide10(prs, slide10_idx, section1, section3, section4):
     slide = prs.slides[slide10_idx]
     rows_data, total_pfv = _build_transition_data(section3, section4, section1)
@@ -1619,7 +1843,9 @@ def populate_slide10(prs, slide10_idx, section1, section3, section4):
     set_cell_text(total_row.cells[0], '  Total')
     for j, key in enumerate(col_order):
         val, pct = total_rd[key]
-        set_cell_text(total_row.cells[j + 1], f"  {format_inr(val)} | {pct}%")
+        set_cell_text(total_row.cells[j + 1], f"{format_inr(val)} | {pct}%")
+
+    _even_out_transition_table(slide, tbl_shape)
 
     # Tax liability — summed from section4 per-scheme rows.
     # Section4 has EXIT_LOAD, EL+STCG, Max LTCG per scheme (no grand total row).
@@ -1649,7 +1875,7 @@ def populate_slide10(prs, slide10_idx, section1, section3, section4):
         if shape.has_text_frame and 'Tax Liability' in shape.text_frame.text:
             paras = shape.text_frame.paragraphs
             if len(paras) >= 1:
-                _set_para_text(paras[0], f"Tax Liability: INR {_fmt_tax(tax_total)}")
+                _set_para_text(paras[0], f"Tax Liability: INR {_fmt_tax(tax_total)}*")
             if len(paras) >= 2:
                 _set_para_text(paras[1], f"EL {_fmt_tax(el)} + STCG {_fmt_tax(stcg)} + LTCG {_fmt_tax(ltcg_gain)}")
             break
@@ -1659,6 +1885,7 @@ def populate_slide10(prs, slide10_idx, section1, section3, section4):
     #   "Total Sell: MFUserID1 - Amount Sold1, MFUserID2 - Amount Sold2, ..."
     # which we replace with one CSV entry per actual user_id.
     _populate_slide11_user_breakdown(slide, s4_data)
+    _populate_tranche_bullets(slide, s4_data, active_milestones)
 
     print(f"  Slide 10: transition plan updated, corpus = {format_inr(total_pfv)}")
 
@@ -1744,14 +1971,19 @@ def _populate_slide11_user_breakdown(slide, s4_data):
         # 'Tax Liability:' is the portfolio-total tax shape (handled above) — skip
         if 'Tax Liability' in txt:
             continue
+        line = None
         if txt.startswith('Total Sell'):
-            _set_para_text(first, f"Total Sell: {sell_csv}")
+            line = f"Total Sell: {sell_csv}"
         elif txt.startswith('Total Buy'):
-            _set_para_text(first, f"Total Buy: {buy_csv}")
+            line = f"Total Buy: {buy_csv}"
         elif txt.startswith('Total Retained'):
-            _set_para_text(first, f"Total Retained: {ret_csv}")
+            line = f"Total Retained: {ret_csv}"
         elif 'Total Tax' in txt and 'MFUserID' in txt:
             _set_para_text(first, tax_csv)
+        if line is not None:
+            _set_para_text(first, line)
+            for r in first.runs:
+                r.font.bold = True
 
 
 def populate_slide3_user_summary(slide, section4):
@@ -1781,11 +2013,17 @@ def populate_slide3_user_summary(slide, section4):
     # Single-user portfolios drop the 'MFUserID - ' prefix entirely.
     single_user = len(by_user) == 1
     def _line(uid, d):
-        cash_txt = f" + {_fmt_cash(d['cash_value'])} Cash" if d['cash_value'] > 0 else ""
-        body = f"{_fmt_cash(d['mf_value'])} MFs{cash_txt}"
+        parts = []
+        if d['mf_value'] > 0:
+            parts.append(f"{_fmt_cash(d['mf_value'])} MFs")
+        if d['cash_value'] > 0:
+            parts.append(f"{_fmt_cash(d['cash_value'])} Cash")
+        body = ' + '.join(parts) or '0 MFs'
         return body if single_user else f"{uid} - {body}"
 
     users = list(by_user.items())
+    # Long MFU ids wrap at the template width — use the free space up to the donut
+    placeholder.width = max(placeholder.width, int(3.75 * 914400))
     # First user goes into the existing shape
     uid0, d0 = users[0]
     _set_para_text(placeholder.text_frame.paragraphs[0], _line(uid0, d0))
@@ -1812,6 +2050,277 @@ def populate_slide3_user_summary(slide, section4):
                 _set_para_text(paras[0], _line(uid, d))
 
 
+# ---------------------------------------------------------------------------
+# Recap slide (idx 2) — investment line, risk profile, goals, SIP donut
+# ---------------------------------------------------------------------------
+
+_VARIANT_PROFILE = {
+    'VA': 'Very Aggressive', 'A': 'Aggressive', 'B': 'Balanced',
+    'C': 'Conservative', 'VC': 'Conservative',   # VC retired; floor is Conservative
+}
+
+# Donut / legend palette — same hex codes as the M2 deck.
+_RECAP_COLORS = {
+    '1) Aggressive':   '2E8AE5',
+    '2) Balanced':     '4E9EED',
+    '3) Conservative': '6DB0F2',
+    'Hybrid':          'FFE2BF',
+    'Gold & Silver':   'F7CB88',
+    'Global':          'FFC7B4',
+    'Debt Like':       'EBF2F2',
+    'Solution':        'CABAF3',
+}
+_NONEQ_ORDER_RECAP = ['Hybrid', 'Gold & Silver', 'Global', 'Debt Like', 'Solution']
+
+
+def _fmt_money_words(v):
+    """₹1.53 Cr / ₹18.8L / ₹50K — for headline sentences."""
+    v = float(v or 0)
+    if v >= 1e7:
+        return f"₹{v/1e7:.2f}".rstrip('0').rstrip('.') + ' Cr'
+    if v >= 1e5:
+        return f"₹{v/1e5:.1f}".rstrip('0').rstrip('.') + 'L'
+    if v >= 1e3:
+        return f"₹{v/1e3:.1f}".rstrip('0').rstrip('.') + 'K'
+    return f"₹{round(v)}"
+
+
+def _sip_buckets(section4):
+    """[(rg_key, display_name, amount)] in display order, SIP-weighted."""
+    groups, _ = _group_sip_schemes(section4)
+    sip_key = _detect_s4_schema(section4)['sip_amount']
+
+    def amt(rg):
+        return sum(_get_val(r, sip_key, 'SIP Amount', 'SIP Allocation Amount') or 0
+                   for subs in groups[rg].values() for r in subs)
+    out = [(rg, RG_DISPLAY.get(rg, rg), amt(rg)) for rg in EQUITY_RGS if rg in groups]
+    noneq = sorted([rg for rg in groups if rg not in EQUITY_RGS],
+                   key=lambda rg: _NONEQ_ORDER_RECAP.index(rg) if rg in _NONEQ_ORDER_RECAP else 99)
+    out += [(rg, RG_DISPLAY.get(rg, rg), amt(rg)) for rg in noneq]
+    return [b for b in out if b[2] > 0]
+
+
+def _recap_donut_png(segments, px_w, px_h):
+    """Ring chart matching the template image geometry: outer radius = 335px
+    on a 1200x742 canvas (scaled), ring width 40%, 12 o'clock start, clockwise."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Wedge
+    scale = px_h / 742.0
+    r_px = 335 * scale
+    dpi = 200
+    fig = plt.figure(figsize=(px_w / dpi, px_h / dpi), dpi=dpi)
+    ax = fig.add_axes([0, 0, 1, 1])
+    fig.patch.set_alpha(0)
+    ax.set_xlim(-px_w / 2 / r_px, px_w / 2 / r_px)
+    ax.set_ylim(-px_h / 2 / r_px, px_h / 2 / r_px)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    total = sum(v for _, v in segments) or 1
+    start = 90.0
+    for color, v in segments:
+        sweep = 360.0 * v / total
+        ax.add_patch(Wedge((0, 0), 1.0, start - sweep, start, width=0.40,
+                           facecolor='#' + color, edgecolor='white', linewidth=1.6))
+        start -= sweep
+    buf = BytesIO()
+    fig.savefig(buf, format='png', dpi=dpi, transparent=True)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def _next_shape_id(slide):
+    ids = [int(e.get('id')) for e in slide.shapes._spTree.iter(qn('p:cNvPr')) if e.get('id', '').isdigit()]
+    return (max(ids) if ids else 1000) + 1
+
+
+def _clone_shape_at(slide, proto_el, top_emu):
+    el = copy.deepcopy(proto_el)
+    for off in el.iter(qn('a:off')):
+        off.set('y', str(int(top_emu)))
+        break
+    for c in el.iter(qn('p:cNvPr')):
+        c.set('id', str(_next_shape_id(slide)))
+        break
+    slide.shapes._spTree.append(el)
+    return slide.shapes[-1]
+
+
+def _set_shape_fill(shape, hex_color):
+    try:
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = RGBColor.from_string(hex_color)
+    except Exception:
+        pass
+
+
+def _rebuild_recap_legend(slide, buckets, total):
+    """Replace the template's fixed Equity/Aggressive/Balanced/Conservative/
+    Hybrid legend with one row per actual SIP bucket."""
+    EMU = 914400
+    zone = [sh for sh in slide.shapes
+            if sh.shape_type != 13 and sh.left >= 7.3 * EMU and 2.55 * EMU <= sh.top <= 4.05 * EMU]
+    by_text = {sh.text_frame.text.strip(): sh for sh in zone if sh.has_text_frame and sh.text_frame.text.strip()}
+    chips = [sh for sh in zone if not (sh.has_text_frame and sh.text_frame.text.strip())
+             and abs(sh.width - sh.height) < 0.02 * EMU and sh.width < 0.2 * EMU]
+    l0_lbl, l0_pct = by_text.get('Equity'), by_text.get('80%')
+    l1_lbl, l1_pct = by_text.get('Aggressive'), by_text.get('30%')
+    if not all([l0_lbl, l0_pct, l1_lbl, l1_pct]):
+        print("  Recap: legend prototypes not found — legend left as template")
+        return
+    # Chip prototype = the chip sitting on the same row as its label
+    big = [c for c in chips if c.width > 0.12 * EMU]
+    small = [c for c in chips if c.width <= 0.12 * EMU]
+    l0_chip = min(big, key=lambda c: abs(c.top - l0_lbl.top), default=None)
+    l1_chip = min(small, key=lambda c: abs(c.top - l1_lbl.top), default=None)
+    if l0_chip is None or l1_chip is None:
+        print("  Recap: legend chips not found — legend left as template")
+        return
+    # Widen label boxes up to the % column, left-align, trim insets — so
+    # names like 'Debt-Like' sit on one line next to their chip
+    from pptx.enum.text import PP_ALIGN
+    for lbl, pct in ((l0_lbl, l0_pct), (l1_lbl, l1_pct)):
+        lbl.width = pct.left - lbl.left - int(0.03 * EMU)
+        tf = lbl.text_frame
+        tf.word_wrap = False
+        tf.margin_left = int(0.05 * EMU)
+        tf.margin_right = 0
+        for p in tf.paragraphs:
+            p.alignment = PP_ALIGN.LEFT
+    protos = {lvl: [copy.deepcopy(s._element) for s in grp] + [s.top - grp[1].top for s in grp]
+              for lvl, grp in ((0, (l0_chip, l0_lbl, l0_pct)), (1, (l1_chip, l1_lbl, l1_pct)))}
+    for sh in zone:
+        sh._element.getparent().remove(sh._element)
+
+    def pct_txt(v):
+        p = v / total * 100 if total else 0
+        return '<1%' if 0 < p < 1 else f'{p:.0f}%'
+
+    def add_row(level, label, value, color, top_in):
+        els = protos[level]
+        top = int(top_in * EMU)
+        chip = _clone_shape_at(slide, els[0], top + els[3])
+        _set_shape_fill(chip, color)
+        lbl = _clone_shape_at(slide, els[1], top)
+        _set_para_text(lbl.text_frame.paragraphs[0], label)
+        pct = _clone_shape_at(slide, els[2], top + els[5])
+        _set_para_text(pct.text_frame.paragraphs[0], pct_txt(value))
+
+    y = 2.65
+    eq = [b for b in buckets if b[0] in EQUITY_RGS]
+    if eq:
+        add_row(0, 'Equity', sum(b[2] for b in eq), _RECAP_COLORS['1) Aggressive'], y)
+        y += 0.33
+        for rg, name, v in eq:
+            add_row(1, name, v, _RECAP_COLORS.get(rg, 'CBD5E1'), y)
+            y += 0.215
+        y += 0.165
+    for rg, name, v in [b for b in buckets if b[0] not in EQUITY_RGS]:
+        add_row(0, name, v, _RECAP_COLORS.get(rg, 'CBD5E1'), y)
+        y += 0.30
+
+
+def _write_invest_line(shape, corpus, sip_total):
+    """Template runs: [amount 18pt][ ][with 15pt grey][ ][sip 18pt][ ][monthly SIP 15pt grey].
+    Keep that styling, fill the numbers, and shrink every run proportionally
+    if the line would not fit the box on one line."""
+    from pptx.util import Pt
+    p = shape.text_frame.paragraphs[0]
+    runs = p.runs
+    if len(runs) < 7:
+        _set_para_text(p, f"{_fmt_money_words(corpus)} with {_fmt_money_words(sip_total)} monthly SIP")
+        return
+    if corpus and sip_total:
+        texts = [_fmt_money_words(corpus), ' ', 'with', ' ', _fmt_money_words(sip_total), ' ', 'monthly SIP']
+    elif corpus:
+        texts = [_fmt_money_words(corpus), '', '', '', '', '', '']
+    else:
+        texts = [_fmt_money_words(sip_total), ' ', 'monthly SIP', '', '', '', '']
+    sizes = [r.font.size.pt if r.font.size else 18.0 for r in runs[:7]]
+    for r, txt in zip(runs, texts):
+        r.text = txt
+    for r in runs[7:]:
+        r.text = ''
+    width_pt = sum(_text_width_pt(t, s) for t, s in zip(texts, sizes) if t)
+    usable = shape.width / 914400 * 72 - 0.2 * 72
+    if width_pt > usable:
+        k = usable / width_pt
+        for r, s in zip(runs, sizes):
+            r.font.size = Pt(round(s * k * 2) / 2)
+
+
+def populate_recap_slide(slide, excel_data):
+    section1 = excel_data.get('section1') or []
+    section4 = excel_data.get('section4') or []
+    rows4 = [r for r in section4 if not r.get('__grand_total__')]
+    sip_key = _detect_s4_schema(section4)['sip_amount']
+
+    # ── Investment with Infinite: total corpus + total monthly SIP ──
+    gt1 = next((r for r in section1 if r.get('__grand_total__')), {})
+    corpus = gt1.get('Total Selected Value') or sum(
+        (r.get('Total Allocation Amount') or r.get('Current Value Amount') or 0) for r in rows4)
+    sip_total = sum(_get_val(r, sip_key, 'SIP Amount', 'SIP Allocation Amount') or 0 for r in rows4)
+    if corpus and sip_total:
+        invest_line = f"{_fmt_money_words(corpus)} with {_fmt_money_words(sip_total)} monthly SIP"
+    elif corpus:
+        invest_line = _fmt_money_words(corpus)
+    else:
+        invest_line = f"{_fmt_money_words(sip_total)} monthly SIP"
+
+    # ── Risk profile: only from the transition plan's variant (e.g. 'VA1').
+    #    Not found → left blank. Goals are filled in manually — never touched.
+    variant = excel_data.get('variant') or ''
+    m = re.match(r'[A-Z]+', variant)
+    risk_profile = _VARIANT_PROFILE.get(m.group(0)) if m else None
+
+    for shape in slide.shapes:
+        if not shape.has_text_frame:
+            continue
+        t = shape.text_frame.text.strip()
+        if 'monthly SIP' in t or t.startswith('₹~') or re.match(r'^₹[\d.~]+\s*(Cr|L|K)', t):
+            _write_invest_line(shape, corpus, sip_total)
+        elif t == 'Replace Risk Profile here':
+            _set_para_text(shape.text_frame.paragraphs[0], risk_profile or '')
+
+    print(f"  Recap: '{invest_line}' | risk='{risk_profile or 'blank (no variant in plan)'}' "
+          f"(variant={variant or '-'})")
+
+    # ── Donut + legend: the plan's final allocation (Total Allocation per
+    #    risk group — includes Global, which never gets a SIP); SIP allocation
+    #    only if the plan has no allocation amounts ──
+    basis = 'final portfolio'
+    agg = {}
+    for r in rows4:
+        v = r.get('Total Allocation Amount') or 0
+        if v > 0:
+            rg = _resolve_rg(r)
+            agg[rg] = agg.get(rg, 0) + v
+    buckets = [(rg, RG_DISPLAY.get(rg, rg), agg[rg]) for rg in EQUITY_RGS if rg in agg]
+    buckets += [(rg, RG_DISPLAY.get(rg, rg), agg[rg])
+                for rg in sorted([g for g in agg if g not in EQUITY_RGS],
+                                 key=lambda g: _NONEQ_ORDER_RECAP.index(g) if g in _NONEQ_ORDER_RECAP else 99)]
+    if not buckets:
+        buckets = _sip_buckets(section4)
+        basis = 'SIP'
+    if not buckets:
+        return
+    total = sum(b[2] for b in buckets)
+
+    pic = next((sh for sh in slide.shapes if sh.shape_type == 13), None)
+    if pic is not None:
+        px_w, px_h = pic.image.size
+        png = _recap_donut_png([(_RECAP_COLORS.get(rg, 'CBD5E1'), v) for rg, _, v in buckets], px_w, px_h)
+        new_pic = slide.shapes.add_picture(png, pic.left, pic.top, pic.width, pic.height)
+        pic._element.addprevious(new_pic._element)   # keep original z-order (behind centre text)
+        pic._element.getparent().remove(pic._element)
+
+    _rebuild_recap_legend(slide, buckets, total)
+    print(f"  Recap: donut + legend built from {basis} allocation "
+          f"({', '.join(f'{n} {v/total*100:.0f}%' for _, n, v in buckets)})")
+
+
 def populate_schemes_not_selected(prs, pf_selection):
     """Fill the 'Schemes not selected' slide table with rows that have
     Action == 'Keep with customer'. Resizes the existing 2-col table to
@@ -1832,66 +2341,12 @@ def populate_schemes_not_selected(prs, pf_selection):
     idx = find_slide_by_text(prs, "Schemes not selected")
     if idx is None:
         return
-    slide = prs.slides[idx]
-    tbl_shape = None
-    for shp in slide.shapes:
-        if shp.has_table:
-            tbl_shape = shp; break
-    if tbl_shape is None:
-        return
-    tbl = tbl_shape.table
-    target = len(pf_selection) + 1  # +1 for header
-    current = len(tbl.rows)
-    if target > current:
-        for _ in range(target - current):
-            add_table_row(tbl, copy_from_row_idx=1)
-    elif target < current:
-        for _ in range(current - target):
-            _remove_last_table_row(tbl)
-    has_sr_col = (
-        len(tbl.rows) >= 1 and len(tbl.rows[0].cells) >= 4
-        and 'sr' in tbl.rows[0].cells[0].text_frame.text.strip().lower()
-    )
-    # Inherit Sr.No. font size from header (template often leaves rows 3+
-    # without an explicit size → they render at the layout default).
-    sr_size_pt = None
-    if has_sr_col:
-        for p in tbl.rows[0].cells[0].text_frame.paragraphs:
-            for r in p.runs:
-                if r.font.size:
-                    sr_size_pt = r.font.size.pt; break
-            if sr_size_pt: break
-
-    def _force_size(cell, pt):
-        if pt is None: return
-        from pptx.util import Pt
-        for p in cell.text_frame.paragraphs:
-            for r in p.runs:
-                r.font.size = Pt(pt)
-
-    for i, row in enumerate(pf_selection):
-        cells = tbl.rows[i + 1].cells
-        if has_sr_col:
-            set_cell_text(cells[0], f"{i + 1}.")
-            _force_size(cells[0], sr_size_pt)
-            set_cell_text(cells[1], row['scheme'])
-            if len(cells) > 2: set_cell_text(cells[2], format_inr(row.get('value', 0)))
-            if len(cells) > 3: set_cell_text(cells[3], row['reason'])
-        else:
-            set_cell_text(cells[0], row['scheme'])
-            if len(cells) >= 2:
-                set_cell_text(cells[1], row['reason'])
-    # Populate 'Total Not Selected: <amount>' text shape below the table
-    total_val = sum(r.get('value', 0) for r in pf_selection)
-    for shp in slide.shapes:
-        if not shp.has_text_frame or shp.has_table:
-            continue
-        if shp.text_frame.text.strip().lower().startswith('total '):
-            paras = shp.text_frame.paragraphs
-            if paras:
-                _set_para_text(paras[0], f"Total Not Selected: {format_inr(total_val)}")
-            break
-    print(f"  Slide 'Schemes not selected': filled {len(pf_selection)} rows, total {format_inr(total_val)}")
+    rows = [{'FUND_NAME': r['scheme'], 'Value': r.get('value', 0), 'Reason': r.get('reason', '')}
+            for r in pf_selection]
+    _populate_single_action(prs, idx, 'Schemes not selected', rows, 'FUND_NAME', 'Value',
+                            total_label='Not Selected')
+    total_val = sum(r['Value'] or 0 for r in rows)
+    print(f"  Slide 'Schemes not selected': filled {len(rows)} rows, total {format_inr(total_val)}")
 
 
 def _remove_last_table_row(table):
@@ -2202,6 +2657,29 @@ def _find_scheme_slide_for_rg(prs, rg, is_sip):
     return None
 
 
+def _fit_scheme_frame(slide):
+    """Resize the rounded table frame + vertical column dividers so they end
+    just below the last scheme row (template: 0.88in below the last row top),
+    instead of staying 4-rows tall when a slide only has 1-3 schemes."""
+    EMU = 914400
+    frame = None
+    for sh in slide.shapes:
+        try:
+            if sh.shape_type == 1 and sh.auto_shape_type == 5 and sh.width > 8 * EMU:
+                frame = sh
+                break
+        except Exception:
+            continue
+    tables = [s for s in slide.shapes if s.has_table]
+    if frame is None or not tables:
+        return
+    new_bottom = min(max(t.top for t in tables) + int(0.88 * EMU), int((5.625 - 0.15) * EMU))
+    frame.height = new_bottom - frame.top
+    for sh in slide.shapes:
+        if sh.shape_type == 9 and sh.height > 2 * EMU:   # vertical column dividers
+            sh.height = new_bottom - sh.top - int(0.02 * EMU)
+
+
 def _build_scheme_slides(prs, groups, template_map, pct_key, ref_data, rr_category):
     """
     Build scheme slides for SIP or corpus.
@@ -2266,6 +2744,7 @@ def _build_scheme_slides(prs, groups, template_map, pct_key, ref_data, rr_catego
             # Delete unused slots (from bottom up)
             for slot_i in range(len(slots) - 1, len(page_schemes) - 1, -1):
                 _delete_slot(slots[slot_i])
+            _fit_scheme_frame(curr_slide)
 
             # Update label shape on every page
             label_shape = _find_label_shape(curr_slide)
@@ -2345,26 +2824,28 @@ def populate_sip_scheme_slides(prs, section4, ref_data, rr_category):
     # Hybrid / Gold & Silver only — Global was historically corpus-only.
     # If Global has SIPs, clone the Gold & Silver SIP slide and relabel it
     # 'Global | …' so _find_scheme_slide_for_rg(rg='Global') can locate it.
+    # Same for Debt Like (e.g. a Liquid-fund SIP) and Solution — without a
+    # slide those SIP rows were silently dropped from the scheme-level slides.
     sip_template = dict(SIP_TEMPLATE)
-    if 'Global' in groups and 'Global' not in sip_template:
-        gold_idx = _find_scheme_slide_for_rg(prs, 'Gold & Silver', is_sip=True)
-        if gold_idx is not None:
-            new_idx = duplicate_slide_after(prs, gold_idx)
-            label_shape = _find_label_shape(prs.slides[new_idx])
-            if label_shape is not None:
-                # Seed the label with 'Global | 0%' so the lookup-by-text
-                # finds it; _update_label_shape will rewrite with the real
-                # total% + sub list during _build_scheme_slides.
-                paras = label_shape.text_frame.paragraphs
-                if paras:
-                    _set_para_text(paras[0], 'Global | 0%')
-                # Layout B (Hybrid/Gold) keeps a vertical-tab line break in
-                # the same paragraph — clear any leftover sub list so the
-                # _update pass writes Global's own.
-                if len(paras) >= 2:
-                    _set_para_text(paras[1], '')
-            sip_template['Global'] = new_idx
-            print(f"  Cloned Gold & Silver SIP slide for Global at idx {new_idx}")
+    anchor_idx = _find_scheme_slide_for_rg(prs, 'Gold & Silver', is_sip=True)
+    for extra_rg in ('Global', 'Debt Like', 'Solution'):
+        if extra_rg not in groups or extra_rg in sip_template or anchor_idx is None:
+            continue
+        new_idx = duplicate_slide_after(prs, anchor_idx)
+        label_shape = _find_label_shape(prs.slides[new_idx])
+        if label_shape is not None:
+            # Seed the label so lookup-by-text finds it; _update_label_shape
+            # rewrites it with the real total% + sub list later.
+            paras = label_shape.text_frame.paragraphs
+            if paras:
+                _set_para_text(paras[0], f'{RG_LABEL1.get(extra_rg, extra_rg)} | 0%')
+            # Layout B (Hybrid/Gold) keeps a vertical-tab line break in the
+            # same paragraph — clear any leftover sub list.
+            if len(paras) >= 2:
+                _set_para_text(paras[1], '')
+        sip_template[extra_rg] = new_idx
+        anchor_idx = new_idx
+        print(f"  Cloned Gold & Silver SIP slide for {extra_rg} at idx {new_idx}")
 
     _build_scheme_slides(prs, groups, sip_template, 'SIP Allocation %', ref_data, rr_category)
     print("  SIP scheme slides populated")
@@ -2400,7 +2881,49 @@ def populate_corpus_scheme_slides(prs, section4, ref_data, rr_category):
 # Sell / Retain / Buy slides
 # ---------------------------------------------------------------------------
 
-MAX_ROWS_PER_SLIDE = 11
+MAX_ROWS_PER_SLIDE = 15
+
+
+def _paginate_by_height(slide, tbl_shape, schemes, name_key):
+    """Split rows into pages of at most MAX_ROWS_PER_SLIDE that also fit
+    vertically between the table top and the 'Total …' line. Rows whose
+    scheme name / reason wrap onto 2-3 lines take proportionally more room."""
+    EMU = 914400
+    tbl = tbl_shape.table
+    total_top = None
+    for sh in slide.shapes:
+        if sh.has_text_frame and not sh.has_table and \
+                sh.text_frame.text.strip().lower().startswith('total ') and sh.top > tbl_shape.top:
+            total_top = sh.top if total_top is None else min(total_top, sh.top)
+    budget_in = ((total_top or int(5.15 * EMU)) - tbl_shape.top) / EMU - 0.10
+
+    widths_in = [c.width / EMU for c in tbl.columns]
+    has_sr = len(widths_in) >= 4 and 'sr' in tbl.rows[0].cells[0].text_frame.text.strip().lower()
+    name_w = widths_in[1] if has_sr else widths_in[0]
+    reason_w = widths_in[-1]
+    size_pt = 9.0
+    line_in = size_pt * 1.2 / 72
+    row_min_in = tbl.rows[1].height / EMU if len(tbl.rows) > 1 else 0.219
+    header_in = tbl.rows[0].height / EMU
+
+    def lines(text, width_in):
+        if not text:
+            return 1
+        usable_pt = (width_in - 0.10) * 72
+        return max(1, int(-(-_text_width_pt(str(text), size_pt) // usable_pt)))
+
+    pages, cur, used = [], [], header_in
+    for s in schemes:
+        n = max(lines(s.get(name_key, ''), name_w), lines(s.get('Reason', ''), reason_w))
+        h = max(row_min_in, n * line_in + 0.06)
+        if cur and (len(cur) >= MAX_ROWS_PER_SLIDE or used + h > budget_in):
+            pages.append(cur)
+            cur, used = [], header_in
+        cur.append(s)
+        used += h
+    if cur:
+        pages.append(cur)
+    return pages
 
 
 
@@ -2577,21 +3100,21 @@ def _action_is(action_str, *keywords):
 
 
 def _populate_single_action(prs, slide_idx, label_text, schemes, name_key, value_key,
-                             strip_label=None):
+                             strip_label=None, total_label=None):
     """
     Populate one action type on its own dedicated template slide.
     - If no schemes: delete the slide.
-    - If schemes > MAX_ROWS_PER_SLIDE: clone the slide for each overflow page.
+    - Pages hold at most MAX_ROWS_PER_SLIDE rows AND only as many as fit above
+      the 'Total …' line; overflow goes onto cloned continuation slides.
     - strip_label: if the template slide has an embedded secondary section (e.g. Fresh Buy
       slide still has a Buy More section below), pass its label text to remove it.
+    - total_label: text used in the 'Total <X>:' line when it differs from label_text.
     """
+    total_label = total_label or label_text
     if not schemes:
         delete_slide(prs, slide_idx)
         print(f"  Deleted empty '{label_text}' slide")
         return
-
-    pages = [schemes[i:i + MAX_ROWS_PER_SLIDE]
-             for i in range(0, len(schemes), MAX_ROWS_PER_SLIDE)]
 
     # Strip any embedded secondary section from the original template slide first,
     # so clones are clean from the start.
@@ -2599,19 +3122,21 @@ def _populate_single_action(prs, slide_idx, label_text, schemes, name_key, value
     if strip_label:
         _remove_section_from_slide(original, strip_label, None)
 
-    # Fill first page on original slide
     tbl = _find_table_near_label(original, label_text, None)
-    if tbl:
-        _fill_action_table(tbl.table, pages[0], name_key, value_key, sr_offset=0)
-    else:
+    if tbl is None:
         print(f"  WARNING: table for '{label_text}' not found on slide {slide_idx}")
+        return
+    pages = _paginate_by_height(original, tbl, schemes, name_key)
+
+    # Fill first page on original slide
+    _fill_action_table(tbl.table, pages[0], name_key, value_key, sr_offset=0)
 
     # Grand total across ALL pages — same number on every overflow slide so a
     # reader can pick up any one and see the action's full value.
     def _val(s):
         return _get_val(s, value_key, value_key + ' Amount', value_key.replace(' Amount', '')) or 0
     grand_total = sum(_val(s) for s in schemes)
-    _populate_action_total(original, label_text, grand_total)
+    _populate_action_total(original, total_label, grand_total)
 
     # Overflow: clone the (already-stripped) original slide for each additional page
     current_idx = slide_idx
@@ -2622,8 +3147,10 @@ def _populate_single_action(prs, slide_idx, label_text, schemes, name_key, value
         tbl2 = _find_table_near_label(dup, label_text, None)
         if tbl2:
             _fill_action_table(tbl2.table, page, name_key, value_key, sr_offset=sr_offset)
-        _populate_action_total(dup, label_text, grand_total)
+        _populate_action_total(dup, total_label, grand_total)
         sr_offset += len(page)
+    if len(pages) > 1:
+        print(f"    '{label_text}' paginated: {[len(p) for p in pages]} rows per slide")
 
 
 def _dedup_by_fund(rows, value_keys):
@@ -2704,12 +3231,31 @@ def populate_action_slides(prs, section4):
          lambda r: _action_is(r.get('Action'), 'sell') and _action_is(r.get('Action'), 'partial'),
          'FUND_NAME', 'Redemption Value Amount', None),
 
+        # Complete Retain catches BOTH:
+        #   (a) explicit 'Retain completely' rows, AND
+        #   (b) 'Buy more' rows whose existing units (Retained Value Amount > 0)
+        #       are being kept in full alongside the additional buy — those
+        #       funds are simultaneously fully retained AND augmented.
         ('Complete Retain',
-         lambda r: _action_is(r.get('Action'), 'retain') and _action_is(r.get('Action'), 'complet'),
+         lambda r: (
+             (_action_is(r.get('Action'), 'retain') and _action_is(r.get('Action'), 'complet'))
+             or (_action_is(r.get('Action'), 'buy', 'more')
+                 and (r.get('Retained Value Amount') or 0) > 0)
+         ),
          'FUND_NAME', 'Retained Value Amount', None),
 
+        # Partial Retain catches BOTH:
+        #   (a) explicit 'Retain partially' rows (rare), AND
+        #   (b) 'Sell partially' rows whose residual (Retained Value Amount > 0)
+        #       is kept with the customer — those funds are simultaneously
+        #       partially sold AND partially retained.
         ('Partial Retain',
-         lambda r: _action_is(r.get('Action'), 'retain') and _action_is(r.get('Action'), 'partial'),
+         lambda r: (
+             _action_is(r.get('Action'), 'partial')
+             and (_action_is(r.get('Action'), 'retain')
+                  or _action_is(r.get('Action'), 'sell'))
+             and (r.get('Retained Value Amount') or 0) > 0
+         ),
          'FUND_NAME', 'Retained Value Amount', None),
 
         ('Fresh Buy',
@@ -2822,6 +3368,9 @@ def generate_deck(excel_data, client_name, ref_data=None, rr_category=None):
     replace_text_preserving_format(prs.slides[2], "Hari", first_name)
     # Slide 3 also carries one or more 'MFUserID - X MFs + Y Cash' rows
     populate_slide3_user_summary(prs.slides[2], excel_data['section4'])
+    # Recap: investment line, risk profile (from plan variant), SIP-allocation donut + legend.
+    # Goals placeholder is intentionally left for manual entry.
+    populate_recap_slide(prs.slides[2], excel_data)
 
     # Slide 4 (idx 3) — SIP summary
     slide4_idx = find_slide_by_text(prs, "ideal SIP strategy")

@@ -918,14 +918,15 @@ class M3Tab(_BaseTab):
 # Agreement tab — pure form, no Excel upload
 # ═══════════════════════════════════════════════════════════════
 class AgreementTab(ctk.CTkFrame):
-    """Generates an Elite or Non-Elite agreement DOCX, uploads it as a
-    Google Doc to the agreement output folder, and shows the user a link.
+    """Generates the PowerUp Infinite agreement, uploads it as a PDF to the
+    agreement output folder, and shows the user a link.
     Different shape from M1/M2/M3 tabs — no file upload, no client picker.
     Pure form input + dynamic fee-slab rows."""
 
     TITLE = "Agreement"
-    SUBTITLE = ("Generate a client agreement (Elite or Non-Elite) with default "
+    SUBTITLE = ("Generate the PowerUp Infinite client agreement with default "
                 "or custom fee slabs.")
+    MAX_SLABS = 7
     GENERATE_LABEL = "Generate Agreement"
 
     def __init__(self, parent, status_cb):
@@ -964,36 +965,10 @@ class AgreementTab(ctk.CTkFrame):
             wraplength=820, justify="left",
         ).grid(row=1, column=0, sticky="ew", pady=(Space.XS, 0))
 
-        # Type card — radio between Elite / Non-Elite
-        type_card = Card(s)
-        type_card.grid(row=1, column=0, padx=Space.XXL,
-                       pady=(Space.MD, Space.MD), sticky="ew")
-        type_card.grid_columnconfigure(0, weight=1)
-
-        Label(type_card, text="Agreement type",
-              font=Font.BODY_BOLD).grid(
-            row=0, column=0, padx=Space.LG,
-            pady=(Space.LG, Space.SM), sticky="w",
-        )
-        self.type_var = ctk.StringVar(value="Elite")
-        type_row = ctk.CTkFrame(type_card, fg_color="transparent")
-        type_row.grid(row=1, column=0, padx=Space.LG,
-                      pady=(0, Space.LG), sticky="w")
-        for v, label in (("Elite",     "Elite (PowerUp Infinite)"),
-                         ("Non-Elite", "Non-Elite (UW IA Client Agreement)")):
-            ctk.CTkRadioButton(
-                type_row, text=label, variable=self.type_var, value=v,
-                font=Font.BODY, text_color=Color.TEXT_PRIMARY,
-                fg_color=Color.PRIMARY, hover_color=Color.PRIMARY_HOVER,
-                border_color=Color.SECONDARY_BORDER,
-                command=self._on_type_changed,
-            ).grid(row=0, column=("Elite", "Non-Elite").index(v),
-                   padx=(0, Space.XL), pady=Space.XS, sticky="w")
-
-        # Client details card
+        # Client details card (only the PowerUp Infinite agreement is offered)
         client_card = Card(s)
         client_card.grid(row=2, column=0, padx=Space.XXL,
-                         pady=(0, Space.MD), sticky="ew")
+                         pady=(Space.MD, Space.MD), sticky="ew")
         client_card.grid_columnconfigure(1, weight=1)
 
         Label(client_card, text="Client details",
@@ -1014,31 +989,15 @@ class AgreementTab(ctk.CTkFrame):
                              pady=Space.SM, sticky="ew")
         self.name_entry.bind("<KeyRelease>", lambda _: self._refresh_state())
 
-        # Email / phone — only when Non-Elite. Slots reserved up-front so
-        # later layout doesn't shuffle.
-        MutedLabel(client_card, text="Email").grid(
-            row=2, column=0, padx=(Space.LG, Space.MD), pady=Space.SM, sticky="w",
+        MutedLabel(client_card, text="Agreement date").grid(
+            row=2, column=0, padx=(Space.LG, Space.MD),
+            pady=(Space.SM, Space.LG), sticky="w",
         )
-        self.email_entry = TextInput(
-            client_card, placeholder_text="Client email (or NA to skip)",
-        )
-        self.email_entry.grid(row=2, column=1, padx=(0, Space.LG),
-                              pady=Space.SM, sticky="ew")
-
-        MutedLabel(client_card, text="Phone").grid(
-            row=3, column=0, padx=(Space.LG, Space.MD), pady=Space.SM, sticky="w",
-        )
-        self.phone_entry = TextInput(
-            client_card, placeholder_text="Phone number (or NA to skip)",
-        )
-        self.phone_entry.grid(row=3, column=1, padx=(0, Space.LG),
-                              pady=(Space.SM, Space.LG), sticky="ew")
-
-        # Date — only when Elite
-        self.date_label = MutedLabel(client_card, text="Agreement date")
         self.date_entry = TextInput(
             client_card, placeholder_text="YYYY-MM-DD (default: today)",
         )
+        self.date_entry.grid(row=2, column=1, padx=(0, Space.LG),
+                             pady=(Space.SM, Space.LG), sticky="ew")
 
         # Fee slabs card
         slab_card = Card(s)
@@ -1080,10 +1039,9 @@ class AgreementTab(ctk.CTkFrame):
             row=0, column=0, padx=(0, Space.MD), sticky="w",
         )
         self.slab_count_var = ctk.StringVar(value="1")
-        # Max 3 slabs — agreements never have more than 3 fee tiers.
         self.slab_count_dd = Dropdown(
             self.slab_count_row,
-            values=["1", "2", "3"],
+            values=[str(i) for i in range(1, self.MAX_SLABS + 1)],
             command=self._on_slab_count_changed,
             width=80,
         )
@@ -1113,33 +1071,7 @@ class AgreementTab(ctk.CTkFrame):
         self.result_frame = Card(s)
         self.result_frame.grid_columnconfigure(0, weight=1)
 
-        # Initial state: Elite is the default → show date row, hide email/phone
-        self._on_type_changed()
-
-    # ── Type / mode changes ───────────────────────────────────
-    def _on_type_changed(self):
-        is_elite = self.type_var.get() == "Elite"
-        # Email + phone rows live at rows 2 and 3 — show or hide them
-        if is_elite:
-            self.email_entry.master.grid_slaves(row=2, column=0)
-            for r in (2, 3):
-                for w in self.email_entry.master.grid_slaves(row=r):
-                    w.grid_remove()
-            self.date_label.grid(row=2, column=0, padx=(Space.LG, Space.MD),
-                                 pady=(Space.SM, Space.LG), sticky="w")
-            self.date_entry.grid(row=2, column=1, padx=(0, Space.LG),
-                                 pady=(Space.SM, Space.LG), sticky="ew")
-        else:
-            self.date_label.grid_remove()
-            self.date_entry.grid_remove()
-            # Re-show email/phone (row 2, 3)
-            for r in (2, 3):
-                for w in self.email_entry.master.grid_slaves(row=r):
-                    if w in (self.date_label, self.date_entry):
-                        continue
-                    w.grid()
-        self._refresh_state()
-
+    # ── Mode changes ──────────────────────────────────────────
     def _on_slab_mode_changed(self):
         if self.slab_mode.get() == "Custom":
             self.custom_frame.grid(row=2, column=0, sticky="ew")
@@ -1190,12 +1122,12 @@ class AgreementTab(ctk.CTkFrame):
     def _collect_custom_slabs(self) -> Optional[list[dict]]:
         if self.slab_mode.get() != "Custom":
             return None
+        # Custom always yields exactly the chosen number of rows — blank
+        # fields stay blank in the agreement (to be filled in by hand).
         slabs = []
         for fee, aua in self._slab_rows:
             f, a = fee.get().strip(), aua.get().strip()
-            if not f:
-                continue
-            if "p.a" not in f.lower():
+            if f and "p.a" not in f.lower():
                 f += " p.a."
             slabs.append({"fee": f, "aua": a})
         return slabs or None
@@ -1208,33 +1140,27 @@ class AgreementTab(ctk.CTkFrame):
         self._show_progress()
         self._hide_result()
 
-        is_elite      = self.type_var.get() == "Elite"
         client_name   = self.name_entry.get().strip()
-        email         = self.email_entry.get().strip() if not is_elite else ""
-        phone         = self.phone_entry.get().strip() if not is_elite else ""
-        date_text     = self.date_entry.get().strip() if is_elite else ""
+        date_text     = self.date_entry.get().strip()
         custom_slabs  = self._collect_custom_slabs()
 
         # Parse the date if provided
         from datetime import date as _date, datetime as _dt
         agreement_date = None
-        if is_elite:
-            if date_text:
-                try:
-                    agreement_date = _dt.strptime(date_text, "%Y-%m-%d").date()
-                except ValueError:
-                    pass  # fall through — engine defaults to today
-            if agreement_date is None:
-                agreement_date = _date.today()
+        if date_text:
+            try:
+                agreement_date = _dt.strptime(date_text, "%Y-%m-%d").date()
+            except ValueError:
+                pass  # fall through — engine defaults to today
+        if agreement_date is None:
+            agreement_date = _date.today()
 
         def _work():
             import traceback as _tb
             try:
                 result = agreement_worker.generate(
-                    is_elite=is_elite,
+                    is_elite=True,
                     client_name=client_name,
-                    email=email,
-                    phone=phone,
                     agreement_date=agreement_date,
                     custom_slabs=custom_slabs,
                 )
@@ -1315,7 +1241,11 @@ class AgreementTab(ctk.CTkFrame):
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("PowerUp Portal (Local)")
+        try:
+            build = Path(__file__).with_name('BUILD.txt').read_text(encoding='utf-8-sig').strip()
+        except Exception:
+            build = ''
+        self.title("PowerUp Portal (Local)" + (f"  —  build {build}" if build else ""))
         self.geometry(f"{WINDOW_W}x{WINDOW_H}")
         # Min size kept generous-enough that the upload + generate button are
         # always visible without scrolling. Below that, scroll handles it.

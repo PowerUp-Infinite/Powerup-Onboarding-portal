@@ -110,6 +110,9 @@ if not exist "%RES%\.env" (
     exit /b 1
 )
 
+REM Build stamp shown in the window title so users can tell which version they run
+powershell -NoProfile -Command "(Get-Date -Format 'dd MMM yyyy HH:mm') | Set-Content -Encoding utf8 '%APP%\BUILD.txt'"
+
 REM Strip any __pycache__ dirs that snuck in
 for /r "%APP%" %%d in (__pycache__) do (
     if exist "%%d" rmdir /s /q "%%d" >NUL 2>&1

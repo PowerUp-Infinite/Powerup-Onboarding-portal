@@ -756,6 +756,28 @@ def do_slide2(prs, first_name):
             return
     print("  Slide 2: WARNING - name placeholder not found")
 
+def _set_numbers_as_of(prs, when=None):
+    """Rewrite every 'Numbers as of <date>' line to the deck-generation date."""
+    from datetime import date as _date
+    d = when or _date.today()
+    date_str = f"{d.day} {d.strftime('%b %Y')}"
+    hits = 0
+    for slide in prs.slides:
+        for shape in _iter_shapes_recursive(slide.shapes):
+            if not shape.has_text_frame:
+                continue
+            for para in shape.text_frame.paragraphs:
+                full = ''.join(r.text for r in para.runs)
+                if 'numbers as of' not in full.lower() or not para.runs:
+                    continue
+                new = re.sub(r'(?i)(numbers as of\s*).*', lambda m: m.group(1) + date_str, full)
+                para.runs[0].text = new
+                for r in para.runs[1:]:
+                    r.text = ''
+                hits += 1
+    print(f"  'Numbers as of' -> '{date_str}' ({hits} place(s))")
+
+
 # ──────────────────────────────────────────────────────────────
 # SLIDE 3 — You at a Glance
 # ──────────────────────────────────────────────────────────────
@@ -1198,6 +1220,90 @@ def do_slide4(prs, pf, rg_agg, risk_profile, is_demat_df=None):
                   f"(pf_risk='{pf_risk}', q_risk='{risk_profile}')")
 
     _make_pie(slide, rg_agg)
+
+
+def do_slide4_invested_chart(prs, pf_id, data):
+    """Small, monochrome 'Total invested over time' line chart in the
+    top-right corner of slide 4. Source: Invested Value Line tab
+    (cumulative INVESTED_AMOUNT by DATE)."""
+    inv = data.get('invested', pd.DataFrame())
+    if inv is None or inv.empty or 'INVESTED_AMOUNT' not in inv.columns:
+        print("  Slide 4: no invested-value data — chart skipped")
+        return
+    inv = inv[inv['PF_ID'].astype(str).str.strip() == str(pf_id).strip()].copy()
+    inv['DATE'] = _parse_dates(inv['DATE'])
+    inv['INVESTED_AMOUNT'] = pd.to_numeric(inv['INVESTED_AMOUNT'], errors='coerce')
+    inv = (inv.dropna(subset=['DATE', 'INVESTED_AMOUNT'])
+              .sort_values('DATE').drop_duplicates('DATE', keep='last'))
+    if len(inv) < 2:
+        print("  Slide 4: <2 invested-value points — chart skipped")
+        return
+
+    vmax = inv['INVESTED_AMOUNT'].max()
+    if vmax >= 1e7:
+        scale, unit = 1e7, 'Cr'
+    else:
+        scale, unit = 1e5, 'L'
+    y = inv['INVESTED_AMOUNT'] / scale
+    x = inv['DATE']
+
+    INK   = '#111111'
+    MUTED = '#8A8F98'
+    RULE  = '#D9DCE1'
+
+    W_IN, H_IN = 2.35, 1.15
+    fig, ax = plt.subplots(figsize=(W_IN, H_IN), dpi=300)
+    fig.patch.set_alpha(0)
+    ax.set_facecolor('none')
+
+    ax.plot(x, y, color=INK, linewidth=0.9, solid_capstyle='round',
+            solid_joinstyle='round')
+    ax.scatter([x.iloc[-1]], [y.iloc[-1]], s=4, color=INK, zorder=3)
+    last_lbl = f'₹{y.iloc[-1]:.2f} {unit}' if unit == 'Cr' else f'₹{y.iloc[-1]:.1f} {unit}'
+    ax.annotate(last_lbl, (x.iloc[-1], y.iloc[-1]), xytext=(-4, 0),
+                textcoords='offset points', ha='right', va='center',
+                fontsize=5.2, color=INK, fontweight='bold')
+
+    def _fmt_money(v, _pos=None):
+        if abs(v) < 1e-9:
+            return '₹0'
+        num = f'{v:.1f}'.rstrip('0').rstrip('.')
+        return f'₹{num} {unit}'
+
+    for side in ('top', 'right', 'left'):
+        ax.spines[side].set_visible(False)
+    ax.spines['bottom'].set_color(RULE)
+    ax.spines['bottom'].set_linewidth(0.5)
+    ax.tick_params(axis='both', length=0, labelsize=4.6, colors=MUTED, pad=2)
+    ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(3, min_n_ticks=3))
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(_fmt_money))
+    ax.yaxis.grid(True, color=RULE, linewidth=0.35)
+    ax.set_axisbelow(True)
+    ax.set_ylim(bottom=0, top=y.max() * 1.12)
+    ax.set_xlim(x.iloc[0], x.iloc[-1] + (x.iloc[-1] - x.iloc[0]) * 0.02)
+
+    span_years = (x.iloc[-1] - x.iloc[0]).days / 365.25
+    if span_years > 3:
+        step = max(1, int(np.ceil(span_years / 4)))
+        ax.xaxis.set_major_locator(matplotlib.dates.YearLocator(base=step))
+        ax.xaxis.set_major_formatter(matplotlib.dates.DateFormatter('%Y'))
+    else:
+        ax.xaxis.set_major_locator(matplotlib.dates.AutoDateLocator(minticks=3, maxticks=4))
+        ax.xaxis.set_major_formatter(matplotlib.dates.DateFormatter("%b '%y"))
+
+    ax.set_xlabel('Total invested over time', fontsize=5.4, color=MUTED, labelpad=3)
+    fig.subplots_adjust(left=0.18, right=0.97, top=0.95, bottom=0.27)
+
+    buf = BytesIO()
+    fig.savefig(buf, format='png', dpi=300, transparent=True)
+    plt.close(fig)
+    buf.seek(0)
+
+    slide = prs.slides[3]
+    slide.shapes.add_picture(buf, Emu(int(7.35 * 914400)), Emu(int(0.30 * 914400)),
+                             Emu(int(W_IN * 914400)), Emu(int(H_IN * 914400)))
+    print(f"  Slide 4: invested-over-time chart added ({len(inv)} points, "
+          f"latest {last_lbl})")
 
 
 def _make_pie(slide, rg):
@@ -1891,6 +1997,60 @@ def _clone_section_onto_slide(source_slide, target_slide, y_offset):
         target_slide.shapes._spTree.append(clone_el)
 
 
+_EMU_PER_IN = 914400
+
+
+def _text_width_in(text, size_pt):
+    """Approximate rendered width (inches) of `text` in IBM Plex Sans.
+    Plex isn't installed locally, so measure with Arial and scale by 1.10
+    (calibrated: 'Equity' @21pt fits the template's 1.29" pill exactly)."""
+    try:
+        from PIL import ImageFont
+        font = ImageFont.truetype('arial.ttf', 100)
+        width_at_100pt = font.getlength(text)
+        width_pt = width_at_100pt * size_pt / 100.0
+    except Exception:
+        width_pt = len(text) * size_pt * 0.55
+    return width_pt * 1.10 / 72.0
+
+
+def _fit_category_pill(slide, label_shape, text, y_min, y_max):
+    """Widen the rounded-rectangle pill behind a category label so it fits
+    the text. The pill is a separate shape; the label is a wider transparent
+    box on top, so long labels ('Solution Oriented', 'Fund of Funds') used to
+    run past the pill's right edge. Never shrinks below the template width."""
+    lt, lb = label_shape.top, label_shape.top + label_shape.height
+    pill = None
+    for sh in slide.shapes:
+        if sh is label_shape or sh.shape_type != 1:
+            continue
+        try:
+            if sh.auto_shape_type != 5 or sh.fill.type is None:   # 5 = ROUNDED_RECTANGLE
+                continue
+        except Exception:
+            continue
+        if not (y_min <= sh.top < y_max) or sh.left >= 2_000_000:
+            continue
+        if sh.top <= lt and sh.top + sh.height >= lb:   # pill encloses the label vertically
+            pill = sh
+            break
+    if pill is None:
+        return
+
+    size_pt = 21
+    for p in label_shape.text_frame.paragraphs:
+        for r in p.runs:
+            if r.font.size:
+                size_pt = r.font.size.pt
+                break
+        break
+
+    pad_left = (label_shape.left + label_shape.text_frame.margin_left) - pill.left
+    needed = _text_width_in(text, size_pt) * _EMU_PER_IN + 2 * pad_left
+    if needed > pill.width:
+        pill.width = int(needed)
+
+
 def _fill_scheme_slide(slide, spec, y_min=0, y_max=9_000_000):
     cat_name  = spec['cat']
     sub_name  = spec['disp']
@@ -1928,6 +2088,7 @@ def _fill_scheme_slide(slide, spec, y_min=0, y_max=9_000_000):
         if shape.left < 2_000_000 and len(txt) < 45:
             if txt in KNOWN_CATS:
                 replace_text(shape, cat_name)
+                _fit_category_pill(slide, shape, cat_name, y_min, y_max)
             elif txt in KNOWN_SUBCATS:
                 replace_text(shape, sub_name)
 
@@ -2052,6 +2213,14 @@ def do_slide6(prs, pf, risk_profile):
         use_competitive = False
         diff = 0.0
 
+    # Portfolio-vs-questionnaire risk match. Mirrors do_slide4's calc so the
+    # "Aligned to your risk profile" claim only fires when slide 4 is also
+    # showing a match. Previously this variant was used as a blind fallback,
+    # which contradicted slide 4 when the composition didn't match.
+    sm = (pf.get('SMALL', 0) + pf.get('MID', 0)) * pf.get('EQUITY', 0) * 100
+    pf_risk = _portfolio_risk(sm)
+    profile_matches = (pf_risk == risk_profile)
+
     # Template text markers — match by content, not by hardcoded shape IDs.
     # Box 01: heading "Consistent investing discipline" (left unchanged),
     #         body starts with "SIPs & lump sum".
@@ -2063,9 +2232,21 @@ def do_slide6(prs, pf, risk_profile):
         box02_heading = 'Delivering competitive returns'
         box02_body    = (f"Portfolio performance has edged past benchmark "
                          f"by {diff:.1f}%, you're on the right track")
-    else:
+    elif profile_matches:
         box02_heading = 'Aligned to your risk profile'
         box02_body    = f'Your portfolio reflects your preferred risk level: {risk_profile}*'
+    else:
+        # Neither returns are competitive NOR portfolio-risk matches the
+        # questionnaire — fall back to a factual-positive variant rather
+        # than claiming a match that doesn't exist.
+        pg = pf.get('PF_GAINS', 0) or 0
+        try:
+            gain_str = fmt_inr_rupee(float(pg), prefix='')
+        except Exception:
+            gain_str = ''
+        box02_heading = 'Solid Absolute Gains'
+        box02_body    = (f'Solid absolute gains of {gain_str} already built '
+                         f'through disciplined investing')
 
     BOX02_HEADINGS = {
         'Solid Absolute Gains',
@@ -2087,8 +2268,9 @@ def do_slide6(prs, pf, risk_profile):
               or 'portfolio reflects your preferred' in tl):
             replace_text(shape, box02_body)
 
-    variant = 'Delivering competitive returns' if use_competitive else 'Aligned to your risk profile'
-    print(f"  Slide 6: {years_int}y, {cv_str}, variant='{variant}'")
+    variant = box02_heading
+    print(f"  Slide 6: {years_int}y, {cv_str}, variant='{variant}'  "
+          f"(competitive={use_competitive}, profile_matches={profile_matches})")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -2653,7 +2835,11 @@ def _set_portfolio_pref(shape, text):
                 rPr.set('sz', str(int(size * 100)))
             if bold:
                 rPr.set('b', '1')
-            rPr.set('spc', '-200')
+            # Removed aggressive negative kerning (previously spc='-200' = -2pt
+            # character spacing). Combined with IBM Plex Sans font fallback on
+            # viewer machines that didn't have it, this produced visually
+            # mangled text ("Growslowerwithminimalhighrisk" / "Hhhrik" / etc.).
+            # Default kerning (0) renders cleanly even with a fallback font.
             # Font
             latin = etree.SubElement(rPr, f'{a_ns}latin')
             latin.set('typeface', 'IBM Plex Sans')
@@ -2685,7 +2871,11 @@ def _set_portfolio_pref(shape, text):
             rPr  = etree.SubElement(r_el, f'{a_ns}rPr', lang='en-IN')
             rPr.set('dirty', '0')
             rPr.set('sz', str(int(font_sz * 100)))
-            rPr.set('spc', '-200')
+            # Removed aggressive negative kerning (previously spc='-200' = -2pt
+            # character spacing). Combined with IBM Plex Sans font fallback on
+            # viewer machines that didn't have it, this produced visually
+            # mangled text ("Growslowerwithminimalhighrisk" / "Hhhrik" / etc.).
+            # Default kerning (0) renders cleanly even with a fallback font.
             latin = etree.SubElement(rPr, f'{a_ns}latin')
             latin.set('typeface', 'IBM Plex Sans')
             solidFill = etree.SubElement(rPr, f'{a_ns}solidFill')
@@ -3968,6 +4158,7 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
         do_slide2(prs, first_name)
     else:
         print("  SKIPPED (no name resolved — fill manually)")
+    _set_numbers_as_of(prs)
 
     print("[5/9] Slide 3 - You at a Glance")
     if not q_row.empty:
@@ -3982,6 +4173,7 @@ def generate_deck(pf_id, customer_name, data=None, questionnaire_name=None,
         is_demat_df = is_demat_df[is_demat_df['PF_ID'].astype(str).str.strip()
                                   == str(pf_id).strip()]
     do_slide4(prs, pf_row, rg_agg, risk_profile, is_demat_df=is_demat_df)
+    do_slide4_invested_chart(prs, pf_id, data)
 
     print("[6b/9] Slide 6 - What's working well")
     do_slide6(prs, pf_row, risk_profile)

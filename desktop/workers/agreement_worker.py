@@ -23,18 +23,10 @@ from workers.common import PROGRESS
 
 def _upload_pdf_to_drive(pdf_buf, filename: str, folder_id: str) -> dict:
     """Upload a PDF BytesIO to Drive. Returns {id, url, name}."""
-    from googleapiclient.http import MediaIoBaseUpload
-    import sheets  # type: ignore  (gives us get_drive_service)
-    from google_auth import get_drive_service  # type: ignore
-    drive = get_drive_service()
-    media = MediaIoBaseUpload(pdf_buf, mimetype="application/pdf",
-                              resumable=True)
-    created = drive.files().create(
-        body={"name": filename, "parents": [folder_id]},
-        media_body=media,
-        fields="id, name, webViewLink",
-        supportsAllDrives=True,
-    ).execute()
+    import sheets  # type: ignore
+    created = sheets.create_drive_file_with_retry(
+        {"name": filename, "parents": [folder_id]}, pdf_buf, "application/pdf",
+    )
     return {
         "id":   created["id"],
         "url":  created.get("webViewLink",
@@ -103,12 +95,17 @@ def generate(
     )
 
     # Clean up the intermediate Google Doc — the PDF is the deliverable.
+    # On a shared drive the service account may not be allowed to delete
+    # (Drive answers 404), so fall back to moving it to the trash.
+    drive = get_drive_service()
     try:
-        get_drive_service().files().delete(
-            fileId=gdoc["id"], supportsAllDrives=True,
-        ).execute()
-    except Exception as e:
-        PROGRESS(f"  WARN: couldn't delete intermediate Google Doc: {e}")
+        drive.files().delete(fileId=gdoc["id"], supportsAllDrives=True).execute()
+    except Exception:
+        try:
+            drive.files().update(fileId=gdoc["id"], body={"trashed": True},
+                                 supportsAllDrives=True).execute()
+        except Exception as e:
+            PROGRESS(f"  WARN: couldn't remove intermediate Google Doc: {e}")
 
     PROGRESS(f"Done. Uploaded as '{pdf['name']}'.")
     return {
