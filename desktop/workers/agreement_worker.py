@@ -43,6 +43,7 @@ def generate(
     phone: str = "",
     agreement_date: Optional[_date] = None,
     custom_slabs: Optional[list[dict]] = None,
+    signatory_capacity: str = "Self",
 ) -> dict:
     """Run the full agreement pipeline.
 
@@ -69,6 +70,7 @@ def generate(
             client_name.strip(),
             agreement_date=agreement_date,
             custom_slabs=custom_slabs,
+            signatory_capacity=signatory_capacity,
         )
     else:
         buf, filename = agreement_engine.generate_nonelite(

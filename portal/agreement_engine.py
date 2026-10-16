@@ -147,6 +147,7 @@ def generate_elite(
     client_name: str,
     agreement_date: date | None = None,
     custom_slabs: list[dict] | None = None,
+    signatory_capacity: str = "Self",
 ) -> tuple[BytesIO, str]:
     """
     Generate an Elite (PowerUp Infinite) agreement.
@@ -156,6 +157,8 @@ def generate_elite(
         agreement_date: Date for the agreement (defaults to today)
         custom_slabs: If provided, replaces the default fee slabs.
                       Each dict: {"fee": "0.75% p.a.", "aua": "less than 50 lakhs"}
+        signatory_capacity: Written after "Capacity of signatory (...):" in
+                      the signature block ("Self" by default; "" leaves it blank).
 
     Returns:
         (docx_bytes: BytesIO, filename: str)
@@ -181,6 +184,13 @@ def generate_elite(
     for p in doc.paragraphs:
         if p.text.startswith("Date:"):
             _set_paragraph_field(p, "Date: ", date_str)
+            break
+
+    # -- Capacity of signatory ("Capacity of signatory (self / Director / ...): ")
+    for p in doc.paragraphs:
+        if p.text.startswith("Capacity of signatory"):
+            prefix = p.text[:p.text.index(":", p.text.find(")")) + 1] + " "
+            _set_paragraph_field(p, prefix, signatory_capacity)
             break
 
     # -- Fee slabs (Table 0)

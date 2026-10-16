@@ -991,13 +991,37 @@ class AgreementTab(ctk.CTkFrame):
 
         MutedLabel(client_card, text="Agreement date").grid(
             row=2, column=0, padx=(Space.LG, Space.MD),
-            pady=(Space.SM, Space.LG), sticky="w",
+            pady=Space.SM, sticky="w",
         )
         self.date_entry = TextInput(
             client_card, placeholder_text="YYYY-MM-DD (default: today)",
         )
         self.date_entry.grid(row=2, column=1, padx=(0, Space.LG),
-                             pady=(Space.SM, Space.LG), sticky="ew")
+                             pady=Space.SM, sticky="ew")
+
+        # Capacity of signatory — Self unless the user picks Other and types one
+        MutedLabel(client_card, text="Signing capacity").grid(
+            row=3, column=0, padx=(Space.LG, Space.MD),
+            pady=(Space.SM, Space.LG), sticky="w",
+        )
+        cap_row = ctk.CTkFrame(client_card, fg_color="transparent")
+        cap_row.grid(row=3, column=1, padx=(0, Space.LG),
+                     pady=(Space.SM, Space.LG), sticky="ew")
+        cap_row.grid_columnconfigure(2, weight=1)
+        self.capacity_mode = ctk.StringVar(value="Self")
+        for v, label in (("Self", "Self (default)"), ("Other", "Other")):
+            ctk.CTkRadioButton(
+                cap_row, text=label, variable=self.capacity_mode, value=v,
+                font=Font.BODY, text_color=Color.TEXT_PRIMARY,
+                fg_color=Color.PRIMARY, hover_color=Color.PRIMARY_HOVER,
+                border_color=Color.SECONDARY_BORDER,
+                command=self._on_capacity_mode_changed,
+            ).grid(row=0, column=("Self", "Other").index(v),
+                   padx=(0, Space.XL), pady=Space.XS, sticky="w")
+        self.capacity_entry = TextInput(
+            cap_row, placeholder_text="e.g. Director, Partner, Trustee, Karta",
+        )
+        # not grid'd until Other is picked
 
         # Fee slabs card
         slab_card = Card(s)
@@ -1072,6 +1096,13 @@ class AgreementTab(ctk.CTkFrame):
         self.result_frame.grid_columnconfigure(0, weight=1)
 
     # ── Mode changes ──────────────────────────────────────────
+    def _on_capacity_mode_changed(self):
+        if self.capacity_mode.get() == "Other":
+            self.capacity_entry.grid(row=0, column=2, sticky="ew")
+            self.capacity_entry.focus_set()
+        else:
+            self.capacity_entry.grid_remove()
+
     def _on_slab_mode_changed(self):
         if self.slab_mode.get() == "Custom":
             self.custom_frame.grid(row=2, column=0, sticky="ew")
@@ -1143,6 +1174,9 @@ class AgreementTab(ctk.CTkFrame):
         client_name   = self.name_entry.get().strip()
         date_text     = self.date_entry.get().strip()
         custom_slabs  = self._collect_custom_slabs()
+        # Other with nothing typed → left blank in the agreement to fill by hand
+        capacity      = ("Self" if self.capacity_mode.get() == "Self"
+                         else self.capacity_entry.get().strip())
 
         # Parse the date if provided
         from datetime import date as _date, datetime as _dt
@@ -1162,6 +1196,7 @@ class AgreementTab(ctk.CTkFrame):
                     is_elite=True,
                     client_name=client_name,
                     agreement_date=agreement_date,
+                    signatory_capacity=capacity,
                     custom_slabs=custom_slabs,
                 )
             except Exception as e:
