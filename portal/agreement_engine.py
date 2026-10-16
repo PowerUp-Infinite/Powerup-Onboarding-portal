@@ -106,6 +106,17 @@ def _rebuild_fee_table(table, slabs: list[dict]):
 
 # ── Paragraph helpers ─────────────────────────────────────────
 
+def _strip_highlights(doc):
+    """Remove text highlighting (review markup left in a template) from the
+    body, headers and footers — a client agreement never carries any."""
+    parts = [doc.element.body]
+    for s in doc.sections:
+        parts += [s.header._element, s.footer._element]
+    for part in parts:
+        for h in list(part.iter(qn("w:highlight"))):
+            h.getparent().remove(h)
+
+
 def _set_paragraph_field(paragraph, prefix: str, value: str):
     """
     Replace text after a prefix in a paragraph.
@@ -157,6 +168,7 @@ def generate_elite(
         "elite_template.docx",
     )
     doc = Document(template_path)
+    _strip_highlights(doc)
 
     # -- Fill name (P39: "Name: ...")
     for p in doc.paragraphs:
@@ -209,6 +221,7 @@ def generate_nonelite(
         "nonelite_template.docx",
     )
     doc = Document(template_path)
+    _strip_highlights(doc)
 
     # -- Fee slabs (Table 0)
     if custom_slabs:
